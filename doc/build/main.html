@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="generator" content="pandoc">
+  <meta name="author" content="曹耕晨">
+  <meta name="dcterms.date" content="2023-11-28">
+  <title>InfoNeRF</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, minimal-ui">
+  <link rel="stylesheet" href="https://unpkg.com/reveal.js@^4//dist/reset.css">
+  <link rel="stylesheet" href="https://unpkg.com/reveal.js@^4//dist/reveal.css">
+  <style>
+    .reveal .sourceCode {  /* see #7635 */
+      overflow: visible;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    /* CSS for syntax highlighting */
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+    /* CSS for citations */
+    div.csl-bib-body { }
+    div.csl-entry {
+      clear: both;
+      margin-bottom: 0em;
+    }
+    .hanging-indent div.csl-entry {
+      margin-left:2em;
+      text-indent:-2em;
+    }
+    div.csl-left-margin {
+      min-width:2em;
+      float:left;
+    }
+    div.csl-right-inline {
+      margin-left:2em;
+      padding-left:1em;
+    }
+    div.csl-indent {
+      margin-left: 2em;
+    }  </style>
+  <link rel="stylesheet" href="https://unpkg.com/reveal.js@^4//dist/theme/black.css" id="theme">
+  <link rel="stylesheet" href="revealjs.css"/>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+<section id="title-slide">
+  <h1 class="title">InfoNeRF</h1>
+  <p class="author">曹耕晨</p>
+  <p class="date">2023-11-28</p>
+</section>
+
+<section>
+<section id="第二次大作业介绍" class="title-slide slide level1 center">
+<h1 class="center">第二次大作业介绍</h1>
+
+</section>
+<section id="要求" class="slide level2">
+<h2>要求</h2>
+<p>基于计图 (jittor) 复现 InfoNeRF <span class="citation" data-cites="infonerf">(Kim, Seo, and Han 2021)</span>, 在乐高模型上跑通.</p>
+<ul>
+<li>训练数据: 4 个角度的乐高模型照片 (渲染结果). 要求与 InfoNeRF 选用的图片一致, 参考 <a href="https://github.com/mjmjeong/InfoNeRF/blob/main/configs/infonerf/synthetic/lego.txt" class="uri">https://github.com/mjmjeong/InfoNeRF/blob/main/configs/infonerf/synthetic/lego.txt</a>. 相关数据集自行从 <a href="https://github.com/mjmjeong/InfoNeRF">InfoNeRF 主页</a> 中获取.</li>
+<li>输入: 相机参数 (角度, 位置, 焦距, 视场角等)</li>
+<li>输出: 从这个角度拍摄得到的三维图像</li>
+</ul>
+</section>
+<section id="示例-训练数据" class="slide level2">
+<h2>示例: 训练数据</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr class="odd">
+<td><div style="text-align: center">
+<p><img data-src="figures/nerf_gt_00_graphics_graduate_exercise_lesson_2023-11-28.png" style="width:50.0%" /></p>
+</div></td>
+<td><div style="text-align: center">
+<p><img data-src="figures/nerf_gt_01_graphics_graduate_exercise_lesson_2023-11-28.png" style="width:50.0%" /></p>
+</div></td>
+</tr>
+<tr class="even">
+<td><div style="text-align: center">
+<p><img data-src="figures/nerf_gt_02_graphics_graduate_exercise_lesson_2023-11-28.png" style="width:50.0%" /></p>
+</div></td>
+<td><div style="text-align: center">
+<p><img data-src="figures/nerf_gt_03_graphics_graduate_exercise_lesson_2023-11-28.png" style="width:50.0%" /></p>
+</div></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="示例-输出" class="slide level2">
+<h2>示例: 输出</h2>
+<div class="columns">
+<div class="column">
+<div style="text-align: center">
+<figure>
+<img data-src="figures/nerf_gt_graphics_graduate_exercise_lesson_2023-11-28.png" alt="ground truth" />
+<figcaption aria-hidden="true">ground truth</figcaption>
+</figure>
+</div>
+</div><div class="column">
+<div style="text-align: center">
+<figure>
+<img data-src="figures/nerf_info_graphics_graduate_exercise_lesson_2023-11-28.png" alt="output" />
+<figcaption aria-hidden="true">output</figcaption>
+</figure>
+</div>
+</div>
+</div>
+</section>
+<section id="评分标准" class="slide level2">
+<h2>评分标准</h2>
+<ul>
+<li>基于 Jittor 开源库 JRender 改一改实现: B</li>
+<li>自己实现: A</li>
+<li>参考指标: PSNR &gt; 18. 低于 18 会酌情扣分, 同时也会参考视觉效果. 该 PSNR 的计算方法需要与 InfoNeRF 一致, 即在乐高的 200 张测试集中每隔 8 张取一张, 共计 25 张图片上计算得到.</li>
+</ul>
+</section>
+<section id="作业检查" class="slide level2">
+<h2>作业检查</h2>
+<p>当面检查 + 提交到网络学堂.</p>
+<ul>
+<li><p>检查时间: 考试周, 具体时间请留意网络学堂通知.</p></li>
+<li><p>检查要求: 展示训练结果, 讲解基本原理</p></li>
+<li><p>提交截止时间: 考试周最后一天.</p></li>
+<li><p>提交文件:</p>
+<ul>
+<li>源代码</li>
+<li>模型参数</li>
+<li>项目报告: 包括原理说明, 训练环境, 训练结果 (一段旋转视角的视频), 对结果的分析.</li>
+</ul></li>
+</ul>
+</section>
+<section id="学术诚信相关" class="slide level2">
+<h2>学术诚信相关</h2>
+<ul>
+<li>允许参考 pytorch/jittor 实现, 禁止裸抄.</li>
+</ul>
+</section></section>
+<section>
+<section id="原版-nerf-nerf" class="title-slide slide level1 center">
+<h1 class="center">原版 Nerf <span class="citation" data-cites="nerf">(Mildenhall et al. 2020)</span></h1>
+
+</section>
+<section id="问题定义" class="slide level2">
+<h2>问题定义</h2>
+<p>给出在已知视角场景的一系列图像信息 (包括拍摄到的图像, 以及每张图像对应的相机参数), 合成新视角下的图像.</p>
+</section>
+<section id="整体框架" class="slide level2">
+<h2>整体框架</h2>
+<p>Nerf 的全称是 Neural Radiance Field, 整个过程分为两部分:</p>
+<ul>
+<li>神经辐射场是一个函数 <span class="math inline">\(F_{\Theta}: (\vec{x}, \vec{d}) \mapsto (\vec{c}, \sigma)\)</span>, 输入位置跟观察方向, 输出该点的颜色 (亮度) <span class="math inline">\(\vec{c}\)</span> 跟体密度 <span class="math inline">\(\sigma\)</span>.</li>
+<li>体渲染: 输入一个辐射场, 输出渲染图像.</li>
+</ul>
+</section>
+<section id="基本体渲染知识速成" class="slide level2">
+<h2>基本体渲染知识速成</h2>
+<p>辐射场每个点有自己的亮度和体密度. 想计算一个像素的颜色, 只需要计算视点到像素的连线上每个点对颜色的贡献.</p>
+<div style="text-align: center">
+<p><img data-src="figures/light_graphics_graduate_exercise_lesson_2023-11-28.jpg" style="width:40.0%" /></p>
+</div>
+<p>(图片来源于知乎 <span class="citation" data-cites="basic_graphics">(<span>“计算机图形学（一）-Ray Tracing Basic - 知乎”</span> n.d.)</span>)</p>
+</section>
+<section id="基本体渲染知识速成-1" class="slide level2">
+<h2>基本体渲染知识速成</h2>
+<p>Nerf 用体渲染公式来 <span class="citation" data-cites="volume_rendering">(Kajiya and Von Herzen 1984)</span> 计算每个点的贡献:</p>
+<ul>
+<li>每个点发出的光强与该点的亮度 <span class="math inline">\(\vec{c}\)</span> (因为有 rgb 三种颜色, 所以亮度是个三维向量) 和体密度 <span class="math inline">\(\sigma\)</span> 成正比</li>
+<li>穿过有密度的物体会发生衰减, 所以到达像素位置时需要乘一个衰减系数 <span class="math inline">\(T\)</span>.</li>
+</ul>
+<p>辐射场的体密度只跟位置 <span class="math inline">\(\vec{r}\)</span> 有关, 亮度 <span class="math inline">\(\vec{c}\)</span> 与视角 <span class="math inline">\(\vec{d}\)</span> 跟位置 <span class="math inline">\(\vec{r}\)</span> 有关.</p>
+<p>考虑一条光线 <span class="math inline">\(\vec{r}(t) = \vec{x}+ t \vec{d}\)</span>, 在直线上一点 <span class="math inline">\(\vec{r}(t)\)</span> 发出的光强是 <span class="math inline">\(\sigma (\vec{r}(t)) \vec{c}(\vec{r}(t), \vec{d}) \mathrm dt\)</span>, 从该点到视点发生的衰减系数 <span class="math inline">\(T(t) = \exp\left(-\int_{0}^{t} \sigma(\vec{r}(s)) \mathrm ds\right)\)</span>, 于是我们知道这一点对像素的颜色贡献为 <span class="math inline">\(T(t) \sigma (\vec{r}(t)) \vec{c}(\vec{r}(t), \vec{d}) \mathrm dt\)</span>. 对光线上的每个点做积分即可得到像素的颜色</p>
+</section>
+<section id="离散化" class="slide level2">
+<h2>离散化</h2>
+<p><span id="eq:volume-rendering"><span class="math display">\[C(\vec{x}, \vec{d}) = \int_{0}^{+\infty} T(t) \sigma (\vec{r}(t)) \vec{c}(\vec{r}(t), \vec{d}) \mathrm dt\qquad{(1)}\]</span></span></p>
+<p>假设采样点是 <span class="math inline">\(t_{1}, \ldots, t_{N}\)</span>, 那简单计算后可以知道式 1 的离散结果为</p>
+<p><span class="math display">\[\hat{C}(\vec{x}, \vec{d}) = \sum_{i = 1}^{N} T_{i} \left(1 - \exp(-\sigma_{i} \delta_{i})\right) \vec{c}_{i}, \delta_{i} = t_{i + 1} - t_{i}\]</span></p>
+<p>其中 <span class="math inline">\(T_{i} = \exp\left(-\sum_{j = 1}^{i - 1} \sigma_{j} \delta_{i}\right)\)</span>.</p>
+</section>
+<section id="层次化采样" class="slide level2">
+<h2>层次化采样</h2>
+<p>如果对光线进行等间隔采样, 那只能学到采样点上的信息, 所以在每个等长度区间里进行随机采样, 这一步称作粗采样.</p>
+<div style="text-align: center">
+<p><img data-src="figures/volume_rendering_01_graphics_graduate_exercise_lesson_2023-11-28.png" style="width:40.0%" /></p>
+</div>
+</section>
+<section id="层次化采样-1" class="slide level2">
+<h2>层次化采样</h2>
+<p>空间中有大量位置体密度几乎为 <span class="math inline">\(0\)</span>, 因此如果只采用均匀采样会损失很多信息. 我们在粗采样时会得到一系列权重 (见下式). 我们基于这些权重 <span class="math inline">\(w_{i}\)</span> 再进行一次细采样.</p>
+<p><span class="math display">\[\hat{C}(\vec{x}, \vec{d}) = \sum_{i = 1}^{N_{c}} w_{i} c_{i}\]</span></p>
+<div style="text-align: center">
+<p><img data-src="figures/volume_rendering_02_graphics_graduate_exercise_lesson_2023-11-28.png" style="width:40.0%" /></p>
+</div>
+</section>
+<section id="神经网络速成" class="slide level2">
+<h2>神经网络速成</h2>
+<p>从位置跟视角得到辐射场 <span class="math inline">\(F_{\Theta}: (\vec{x}, \vec{d}) \mapsto (\vec{c}, \sigma)\)</span> 这一步由神经网络完成.</p>
+<p>可以把神经网络理解为一个含参数的函数 <span class="math inline">\(F_{\Theta}\)</span>, 训练过程就是通过一些方法 (例如梯度下降等) 来估计参数 <span class="math inline">\(\Theta\)</span>. 得到一个合适的 <span class="math inline">\(\Theta\)</span> 后就可以用 <span class="math inline">\(F_{\Theta}\)</span> 从输入计算输出.</p>
+<p>估计参数 <span class="math inline">\(\Theta\)</span> 时, 我们需要定义出一个优化目标 <span class="math inline">\(L(\Theta)\)</span>, 称之为损失函数. 损失函数的值越小, 我们对 <span class="math inline">\(\Theta\)</span> 的估计越准.</p>
+</section>
+<section id="神经网络速成-1" class="slide level2">
+<h2>神经网络速成</h2>
+<p>假如我们当前对 <span class="math inline">\(\Theta\)</span> 的估计是 <span class="math inline">\(\Theta_{k}\)</span>, 同时求出梯度方向 <span class="math inline">\(g = \frac{\mathrm dL}{\mathrm d\Theta}\)</span>, 那我们只需要沿着 <span class="math inline">\(-g\)</span> 方向前进一小步就能减小 <span class="math inline">\(L(\Theta)\)</span>, 即</p>
+<p><span class="math display">\[\Theta_{k + 1} = \Theta_{k} - \alpha \frac{\mathrm dL}{\mathrm d\Theta}\]</span></p>
+<p>不断重复这一过程, 我们可以实现对神经网络的优化.</p>
+<p>中间的细节可以参考计图教学套件 <a href="https://cg.cs.tsinghua.edu.cn/teaching" class="uri">https://cg.cs.tsinghua.edu.cn/teaching</a>, 里面讲解了神经网络基础知识入门.</p>
+</section>
+<section id="positional-encoding" class="slide level2">
+<h2>Positional Encoding</h2>
+<p>深度神经网络倾向于学习低频的函数, 为了让 NeRF 能学到高频特征, 我们除了位置跟方向信息 <span class="math inline">\((x, y, z)\)</span> 还要向网络中输入它们变换得到的高频量</p>
+<p><span class="math display">\[\gamma(p) = \left(\sin(2^{0} \pi p), \cos(2^{0} \pi p), \ldots, \sin(2^{L - 1} \pi p), \cos(2^{L - 1} \pi p)\right)\]</span></p>
+<p>这个函数应用在位置跟方向信息的每一个分量上, 例如位置信息 <span class="math inline">\(\vec{x}= (x, y, z)\)</span> 变换为 <span class="math inline">\((\gamma(x), \gamma(y), \gamma(z))\)</span>.</p>
+<p>在论文中, 对坐标的变换取 <span class="math inline">\(L = 10\)</span>, 对视角的变换取 <span class="math inline">\(L = 4\)</span>.</p>
+</section>
+<section id="网络结构" class="slide level2">
+<h2>网络结构</h2>
+<div style="text-align: center">
+<p><img data-src="figures/network_graphics_graduate_exercise_lesson_2023-11-28.png" style="width:100.0%" /></p>
+</div>
+</section>
+<section id="loss" class="slide level2">
+<h2>Loss</h2>
+<p>对于给定的光线集合 <span class="math inline">\(R\)</span>, 我们会得到粗采样渲染结果 <span class="math inline">\(\hat{C}_{c}\)</span> 跟细采样渲染结果 <span class="math inline">\(\hat{C}_{f}\)</span>, 我们希望最小化这些渲染结果与给出的参考图像 <span class="math inline">\(C\)</span> 的差别. 所以定义损失函数为</p>
+<p><span class="math display">\[L = \sum_{\vec{r}\in R} \left\|\hat{C}_{c}(\vec{r}) - C(\vec{r})\right\|_{2}^{2} + \left\|\hat{C}_{f}(\vec{r}) - C(\vec{r})\right\|_{2}^{2}\]</span></p>
+</section></section>
+<section>
+<section id="infonerf-infonerf" class="title-slide slide level1 center">
+<h1 class="center">InfoNeRF <span class="citation" data-cites="infonerf">(Kim, Seo, and Han 2021)</span></h1>
+
+</section>
+<section id="解决的问题" class="slide level2">
+<h2>解决的问题</h2>
+<p>Nerf 需要很多个视角才能渲染得到比较好的效果, 我们希望通过比较少的视角得到还不错的结果.</p>
+</section>
+<section id="解决思路" class="slide level2">
+<h2>解决思路</h2>
+<p>考虑额外的信息, 比如光线的信息熵. 这是因为只有少部分光线击中了采样点, 剩下的部分只起到噪音的作用. 最小化光线的信息熵有助于减小重建过程中的噪音.</p>
+</section>
+<section id="信息熵" class="slide level2">
+<h2>信息熵</h2>
+<p>假设光线 <span class="math inline">\(\vec{r}\)</span> 上的采样点为 <span class="math inline">\(\vec{x}_{1}, \ldots, \vec{x}_{N}\)</span>, 光线的信息熵定义为</p>
+<p><span class="math display">\[H(\vec{r}) := -\sum_{i = 1}^{N} p(\vec{x}_{i}) \log p(\vec{x}_{i}), p(\vec{x}_{i}) := \frac{1 - \exp(-\sigma_{i} \delta_{i})}{\sum_{j = 1}^{N} 1 - \exp(-\sigma_{j} \delta_{j})}\]</span></p>
+<p>此外, 对于没有击中任何物体的光线, 信息熵自然是 <span class="math inline">\(0\)</span>, 我们在优化的时候需要丢弃掉几乎不经过任何物体的光线, 即</p>
+<p><span class="math display">\[Q(\vec{r}) = \sum_{i = 1}^{N} 1 - \exp(-\sigma_{i} \delta_{i})\]</span></p>
+<p>小于某个 <span class="math inline">\(\epsilon\)</span> 的光线.</p>
+</section>
+<section id="信息熵-1" class="slide level2">
+<h2>信息熵</h2>
+<p>通过最小化光线的信息熵可以定义出新的损失函数</p>
+<p><span class="math display">\[L_{\text{entropy}} := \frac{1}{|R|} \sum_{\vec{r}\in R} M(\vec{r}) H(\vec{r})\]</span></p>
+<p><span class="math display">\[M(\vec{r}) := \begin{cases} 1 &amp; Q(\vec{r}) &gt; \epsilon \\ 0 &amp; \text{otherwise} \end{cases}\]</span></p>
+<p>其中 <span class="math inline">\(R\)</span> 是光线集合. 特别的, 该集合中还可以包含来自没有参考图像的视角的光线, 因为信息熵在定义时不依赖于 ground truth 图像, 也就是说我们可以对没有参考图像的画面也定义信息熵. 这也是为什么 InfoNeRF 可以使用较少视角得到还算不错的结果.</p>
+</section>
+<section id="视角的连续性" class="slide level2">
+<h2>视角的连续性</h2>
+<p>文章还希望维持视角的连续性, 也就是说视角偏移一点我们希望出现的图像不要偏移太多. 对于光线 <span class="math inline">\(\vec{r}\)</span>, 让它稍微偏移一点得到光线 <span class="math inline">\(\tilde{\vec{r}}\)</span>, 然后把它们之间的偏移程度定义为新的损失函数, 也就是</p>
+<p><span class="math display">\[L_{\text{KL}} := \sum_{i = 1}^{N} p(\vec{r}_{i}) \log \frac{p(\vec{r}_{i})}{p(\tilde{\vec{r}}_{i})}\]</span></p>
+</section>
+<section id="相应的修改" class="slide level2">
+<h2>相应的修改</h2>
+<ol type="1">
+<li>采样时需要多采样一些没有参考图像的光线, 用来计算 <span class="math inline">\(L_{\text{entropy}}\)</span> 和 <span class="math inline">\(L_{\text{KL}}\)</span>.</li>
+<li>损失函数改为 <span class="math inline">\(L_{\text{RGB}} + \lambda_{1} L_{\text{entropy}} + \lambda_{2} L_{\text{KL}}\)</span>. 其中 <span class="math inline">\(\lambda_{1}, \lambda_{2}\)</span> 是用来调整正则项大小的系数.</li>
+</ol>
+</section></section>
+<section>
+<section id="实践提示" class="title-slide slide level1 center">
+<h1 class="center">实践提示</h1>
+
+</section>
+<section id="jittor" class="slide level2">
+<h2>Jittor</h2>
+<ul>
+<li><p>介绍</p>
+<p>一个完全基于动态编译 (Just-in-time), 内部使用创新的元算子和统一计算图的深度学习框架.</p></li>
+<li><p>安装与基本使用</p>
+<p>参考 <a href="https://cg.cs.tsinghua.edu.cn/jittor/" class="uri">https://cg.cs.tsinghua.edu.cn/jittor/</a></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> pip install jittor</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> jittor.test.test_core</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> jittor.test.test_example</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> jittor.test.test_cudnn_op</span></code></pre></div></li>
+</ul>
+</section>
+<section id="深度学习入门" class="slide level2">
+<h2>深度学习入门</h2>
+<p>参考计图教学套件 <a href="https://cg.cs.tsinghua.edu.cn/teaching" class="uri">https://cg.cs.tsinghua.edu.cn/teaching</a>.</p>
+</section>
+<section id="jrender" class="slide level2">
+<h2>JRender</h2>
+<p>JRender 是一个 Jittor 上的对原版 nerf 的实现.</p>
+<p><a href="https://github.com/Jittor/jrender" class="uri">https://github.com/Jittor/jrender</a></p>
+</section>
+<section id="训练资源" class="slide level2">
+<h2>训练资源</h2>
+<p>正确实现的 Jittor 代码在 NVIDIA TITAN RTX 训练 4.5h 5w iters 可以得到 18.5 的 PSNR. 3090 应该更快, 供同学们参考. 需要计算资源的可以联系我，我申请一些。</p>
+</section>
+<section id="软件版本" class="slide level2">
+<h2>软件版本</h2>
+<p>jittor 请使用 1.3.6.3 版本，后续升级过程有一些兼容性问题。</p>
+</section></section>
+<section>
+<section id="reference" class="title-slide slide level1 center">
+<h1 class="center">Reference</h1>
+
+</section>
+<section id="reference-1" class="slide level2">
+<h2>Reference</h2>
+<div id="refs" class="references csl-bib-body hanging-indent" data-entry-spacing="0" role="list">
+<div id="ref-volume_rendering" class="csl-entry" role="listitem">
+Kajiya, James T., and Brian P Von Herzen. 1984. <span>“Ray Tracing Volume Densities.”</span> <em>ACM SIGGRAPH Computer Graphics</em> 18 (3): 165–74. <a href="https://doi.org/10.1145/964965.808594">https://doi.org/10.1145/964965.808594</a>.
+</div>
+<div id="ref-infonerf" class="csl-entry" role="listitem">
+Kim, Mijeong, Seonguk Seo, and Bohyung Han. 2021. <span>“InfoNeRF: Ray Entropy Minimization for Few-Shot Neural Volume Rendering.”</span> <a href="https://doi.org/10.48550/ARXIV.2112.15399">https://doi.org/10.48550/ARXIV.2112.15399</a>.
+</div>
+<div id="ref-nerf" class="csl-entry" role="listitem">
+Mildenhall, Ben, Pratul P. Srinivasan, Matthew Tancik, Jonathan T. Barron, Ravi Ramamoorthi, and Ren Ng. 2020. <span>“NeRF: Representing Scenes as Neural Radiance Fields for View Synthesis.”</span> arXiv. <a href="http://arxiv.org/abs/2003.08934">http://arxiv.org/abs/2003.08934</a>.
+</div>
+<div id="ref-basic_graphics" class="csl-entry" role="listitem">
+<span>“计算机图形学（一）-Ray Tracing Basic - 知乎.”</span> n.d. Accessed November 6, 2022. <a href="https://zhuanlan.zhihu.com/p/388943992">https://zhuanlan.zhihu.com/p/388943992</a>.
+</div>
+</div>
+</section></section>
+<section id="提问" class="title-slide slide level1 center">
+<h1 class="center">提问</h1>
+
+</section>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/reveal.js@^4//dist/reveal.js"></script>
+
+  <!-- reveal.js plugins -->
+  <script src="https://unpkg.com/reveal.js@^4//plugin/notes/notes.js"></script>
+  <script src="https://unpkg.com/reveal.js@^4//plugin/search/search.js"></script>
+  <script src="https://unpkg.com/reveal.js@^4//plugin/zoom/zoom.js"></script>
+  <script src="https://unpkg.com/reveal.js@^4//plugin/math/math.js"></script>
+
+  <script>
+
+      // Full list of configuration options available at:
+      // https://revealjs.com/config/
+      Reveal.initialize({
+        // Display controls in the bottom right corner
+        controls: true,
+
+        // Help the user learn the controls by providing hints, for example by
+        // bouncing the down arrow when they first encounter a vertical slide
+        controlsTutorial: true,
+
+        // Determines where controls appear, "edges" or "bottom-right"
+        controlsLayout: 'bottom-right',
+
+        // Visibility rule for backwards navigation arrows; "faded", "hidden"
+        // or "visible"
+        controlsBackArrows: 'faded',
+
+        // Display a presentation progress bar
+        progress: true,
+
+        // Display the page number of the current slide
+        slideNumber: true,
+
+        // 'all', 'print', or 'speaker'
+        showSlideNumber: 'all',
+
+        // Add the current slide number to the URL hash so that reloading the
+        // page/copying the URL will return you to the same slide
+        hash: true,
+
+        // Start with 1 for the hash rather than 0
+        hashOneBasedIndex: false,
+
+        // Flags if we should monitor the hash and change slides accordingly
+        respondToHashChanges: true,
+
+        // Push each slide change to the browser history
+        history: false,
+
+        // Enable keyboard shortcuts for navigation
+        keyboard: true,
+
+        // Enable the slide overview mode
+        overview: true,
+
+        // Disables the default reveal.js slide layout (scaling and centering)
+        // so that you can use custom CSS layout
+        disableLayout: false,
+
+        // Vertical centering of slides
+        center: false,
+
+        // Enables touch navigation on devices with touch input
+        touch: true,
+
+        // Loop the presentation
+        loop: false,
+
+        // Change the presentation direction to be RTL
+        rtl: false,
+
+        // see https://revealjs.com/vertical-slides/#navigation-mode
+        navigationMode: 'linear',
+
+        // Randomizes the order of slides each time the presentation loads
+        shuffle: false,
+
+        // Turns fragments on and off globally
+        fragments: true,
+
+        // Flags whether to include the current fragment in the URL,
+        // so that reloading brings you to the same fragment position
+        fragmentInURL: true,
+
+        // Flags if the presentation is running in an embedded mode,
+        // i.e. contained within a limited portion of the screen
+        embedded: false,
+
+        // Flags if we should show a help overlay when the questionmark
+        // key is pressed
+        help: true,
+
+        // Flags if it should be possible to pause the presentation (blackout)
+        pause: true,
+
+        // Flags if speaker notes should be visible to all viewers
+        showNotes: false,
+
+        // Global override for autoplaying embedded media (null/true/false)
+        autoPlayMedia: null,
+
+        // Global override for preloading lazy-loaded iframes (null/true/false)
+        preloadIframes: null,
+
+        // Number of milliseconds between automatically proceeding to the
+        // next slide, disabled when set to 0, this value can be overwritten
+        // by using a data-autoslide attribute on your slides
+        autoSlide: 0,
+
+        // Stop auto-sliding after user input
+        autoSlideStoppable: true,
+
+        // Use this method for navigation when auto-sliding
+        autoSlideMethod: null,
+
+        // Specify the average time in seconds that you think you will spend
+        // presenting each slide. This is used to show a pacing timer in the
+        // speaker view
+        defaultTiming: null,
+
+        // Enable slide navigation via mouse wheel
+        mouseWheel: false,
+
+        // The display mode that will be used to show slides
+        display: 'block',
+
+        // Hide cursor if inactive
+        hideInactiveCursor: true,
+
+        // Time before the cursor is hidden (in ms)
+        hideCursorTime: 5000,
+
+        // Opens links in an iframe preview overlay
+        previewLinks: false,
+
+        // Transition style (none/fade/slide/convex/concave/zoom)
+        transition: 'none',
+
+        // Transition speed (default/fast/slow)
+        transitionSpeed: 'default',
+
+        // Transition style for full page slide backgrounds
+        // (none/fade/slide/convex/concave/zoom)
+        backgroundTransition: 'fade',
+
+        // Number of slides away from the current that are visible
+        viewDistance: 3,
+
+        // Number of slides away from the current that are visible on mobile
+        // devices. It is advisable to set this to a lower number than
+        // viewDistance in order to save resources.
+        mobileViewDistance: 2,
+
+        math: {
+          mathjax: 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js',
+          config: 'TeX-AMS_HTML-full',
+          tex2jax: {
+            inlineMath: [['\\(','\\)']],
+            displayMath: [['\\[','\\]']],
+            balanceBraces: true,
+            processEscapes: false,
+            processRefs: true,
+            processEnvironments: true,
+            preview: 'TeX',
+            skipTags: ['script','noscript','style','textarea','pre','code'],
+            ignoreClass: 'tex2jax_ignore',
+            processClass: 'tex2jax_process'
+          },
+        },
+
+        // reveal.js plugins
+        plugins: [
+          RevealMath,
+          RevealNotes,
+          RevealSearch,
+          RevealZoom
+        ]
+      });
+    </script>
+    </body>
+</html>

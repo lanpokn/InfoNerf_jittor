@@ -1,0 +1,18 @@
+.reveal h1,
+.reveal h2 {
+  text-transform: none;
+}
+
+section.level1 h1 {
+  font-size: 80px;
+}
+
+section.level2 h2 {
+  font-size: 60px;
+  text-align: left;
+}
+
+section.level2 {
+  font-size: 30px;
+  text-align: left;
+}
