@@ -141,6 +141,6 @@ def load_blender_data_ex(args):
     return raw_data
 
 
-if __name__ == '__main__':
-    data = load_blender_data('data/nerf_synthetic/lego')
-    print(data.keys())
+# if __name__ == '__main__':
+#     data = load_blender_data('data/nerf_synthetic/lego')
+#     print(data.keys())

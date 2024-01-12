@@ -1,3 +1,5 @@
+#rewrite here
+#reference:https://github.com/itoshiko/InfoNeRF-jittor
 import jittor as jt
 import jittor.nn as nn
 import glob
@@ -13,6 +15,7 @@ from nerf_base import *
 from utils import *
 from load_blender import *
 import loss as ls
+import ray_utils as ru
 ##nerf comes from others code, not changed
         
 class Infonerf:
@@ -52,6 +55,172 @@ class Infonerf:
             self.loss_fn['kl_smooth'] = ls.SmoothingLoss(self.cfg['info_loss'])
             self.info_lambda = self.cfg['info_loss']['info_lambda']
         self.loss_fn['img_loss'] = nn.MSELoss()
+    def gen_train_data(self):
+        sample_info_gain = self.cfg['info_loss']['use']
+        sample_entropy = self.cfg['entropy_loss']['use']
+        loaded_ray = {}
+
+        # Random from one image
+        i_train = self.loaded_data['i_split'][0]
+        img_i = np.random.choice(i_train)
+        target = self.loaded_data['imgs'][img_i:img_i+1]  # [1, 3, H, W]
+        rgb_pose = self.loaded_data['poses'][img_i]  # [4, 4]
+
+        cfg_train = self.cfg['training']
+        _crop = cfg_train['precrop_frac'] if self.it_time < cfg_train['precrop_iters'] else 1.0
+        # sample rays in target view, ([N_rand, 3], [N_rand, 3], [N_rand, 2])
+        rays_o, rays_d, coord = ru.random_sample_ray(
+            self.img_h, self.img_w, self.focal, rgb_pose, 
+            self.cfg['training']['N_rand'], center_crop=_crop)
+        
+        loaded_ray.update({'coord': coord, 'rays_o': rays_o, 'rays_d': rays_d})
+
+        # sample rays for information gain reduction loss
+        if sample_info_gain:
+            if self.cfg['info_loss']['sampling_method'] == 'near_pose':
+                rgb_near_pose = self.get_near_c2w(rgb_pose)
+                # sample rays in a nearby view for info gain loss, 
+                # ([N_rand, 3], [N_rand, 3], [N_rand, 2])
+                rays_o_near, rays_d_near, _ = ru.random_sample_ray(
+                    self.img_h, self.img_w, self.focal, rgb_near_pose, 
+                    self.cfg['training']['N_rand'], pix_coord=coord)
+            else:
+                rays_o_near, rays_d_near, _ = ru.sample_nearby_ray(
+                    self.img_h, self.img_w, self.focal, rgb_pose, 
+                    coord, self.cfg['info_loss']['pixel_range'])
+            loaded_ray.update({'rays_o_near': rays_o_near, 'rays_d_near': rays_d_near})
+
+        # sample ground truth RGB
+        coord = ru.normalize_pts(coord, self.img_h, self.img_w)  # normalize to [-1, 1] for sampling
+        coord = coord.unsqueeze(0).unsqueeze(0)  # [1, 1, N_rand, 2]
+        target_rgb = nn.grid_sampler_2d(target, coord, 'bilinear', 'zeros', False)  # [1, 3, 1, N_rand]
+        target_rgb = target_rgb.squeeze(0).squeeze(-2)
+        target_rgb = target_rgb.permute(1, 0)  # [N_rand, 3]
+        loaded_ray.update({'target_rgb': target_rgb})
+
+        # Sampling for unseen rays
+        if sample_entropy:
+            n_entropy = self.cfg['entropy_loss']['N_entropy']
+            # randomly choose from all images
+            img_e = np.random.choice(self.loaded_data['imgs'].shape[0])
+            rgb_pose_e = self.loaded_data['poses'][img_e]  # [4, 4]
+            rays_o_ent, rays_d_ent, coord_ent = ru.random_sample_ray(
+                self.img_h, self.img_w, self.focal, rgb_pose_e, 
+                n_entropy, center_crop=_crop)
+            loaded_ray.update({'rays_o_ent': rays_o_ent, 'rays_d_ent': rays_d_ent})
+
+            # sample rays for information gain reduction loss (for unseen rays)
+            if sample_info_gain:
+                if self.cfg['info_loss']['sampling_method'] == 'near_pose':
+                    ent_near_pose = self.get_near_c2w(rgb_pose_e)
+                    # sample rays in a nearby view for info gain loss, 
+                    # ([N_rand, 3], [N_rand, 3], [N_rand, 2])
+                    rays_o_ent_near, rays_d_ent_near, _ = ru.random_sample_ray(
+                        self.img_h, self.img_w, self.focal, ent_near_pose, 
+                        n_entropy, pix_coord=coord_ent)
+                else:
+                    rays_o_ent_near, rays_d_ent_near, _ = ru.sample_nearby_ray(
+                        self.img_h, self.img_w, self.focal, rgb_pose_e, 
+                        coord_ent, self.cfg['info_loss']['pixel_range'])
+                loaded_ray.update({'rays_o_ent_near': rays_o_ent_near, 'rays_d_ent_near': rays_d_ent_near})
+        
+        return loaded_ray
+    def render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
+        """Volumetric rendering for rays
+        """
+        result = {}
+        # calculate sample points along rays
+        near, far = self.cfg['rendering']['near'], self.cfg['rendering']['far']
+        pts, z_vals = ru.generate_pts(
+            rays_o, rays_d, near, far, N_samples, 
+            perturb=((not eval) and (self.cfg['rendering']['perturb'])))
+        if self.cfg['rendering']['use_viewdirs']:
+            view_dirs = rays_d / jt.norm(rays_d, dim=-1, keepdims=True)
+            view_dirs = view_dirs.unsqueeze(1)
+            view_dirs = jt.repeat(view_dirs, (1, N_samples, 1))  # [N_rays, N_samples, 3]
+        else:
+            view_dirs = None
+        raw_out = run_network(
+            pts, view_dirs, self.model, self.embed_fn, self.embeddirs_fn, 
+            self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
+        decoded_out = ru.raw2outputs(
+            raw_out, z_vals, rays_d, 
+            self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
+            self.cfg['dataset']['white_bkgd'],
+            out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
+        result.update({'coarse': decoded_out})
+
+        if N_importance > 0:
+            weights = decoded_out['weights']
+            z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+            z_samples = ru.sample_pdf(
+                z_vals_mid, weights[...,1:-1], N_importance, 
+                det=((not eval) and (self.cfg['rendering']['perturb'])))
+            z_samples = z_samples.stop_grad()
+            _, z_vals_re = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
+            
+            # [N_rays, N_samples + N_importance, 3]
+            pts_re = rays_o[..., None, :] + rays_d[..., None, :] * z_vals_re[..., :, None]
+            if view_dirs is not None:
+                # [N_rays, N_samples + N_importance, 3]
+                view_dirs_re = jt.repeat(view_dirs[:, :1, :], (1, N_samples + N_importance, 1))
+            raw_re = run_network(
+                pts_re, view_dirs_re, 
+                self.model_fine if self.model_fine is not None else self.model, 
+                self.embed_fn, self.embeddirs_fn, 
+                self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
+            decoded_out_re = ru.raw2outputs(
+                raw_re, z_vals_re, rays_d, 
+                self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
+                self.cfg['dataset']['white_bkgd'],
+                out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
+            result.update({'fine': decoded_out_re})
+
+        return result
+
+    def render_image(self, poses, downsample=0, save_dir=None):
+        with jt.no_grad():
+            n_views = poses.shape[0]
+            render = []
+            if downsample != 0:
+                render_h = self.img_h // (2 ** downsample)
+                render_w = self.img_w // (2 ** downsample)
+            else:
+                render_h, render_w = self.img_h, self.img_w
+            focal = self.focal * render_h / self.img_h
+            for vid in tqdm(range(n_views)):
+                pose = poses[vid]
+                rays_o, rays_d = ru.get_rays(render_h, render_w, focal, pose)
+                rays_o = rays_o.reshape((render_h * render_w, -1))
+                rays_d = rays_d.reshape((render_h * render_w, -1))
+
+                total_rays = render_h * render_w
+                group_size = self.cfg['training']['chunk']
+                group_num = (
+                    (total_rays // group_size) if (total_rays % group_size == 0) else (total_rays // group_size + 1))
+                if group_num == 0:
+                    group_num = 1
+                    group_size = total_rays
+
+                group_output = []
+                for gi in range(group_num):
+                    start = gi * group_size
+                    end = (gi + 1) * group_size
+                    end = (end if (end <= total_rays) else total_rays)
+                    render_out = self.render_rays(
+                        rays_o[start:end], rays_d[start:end], self.cfg['rendering']['N_samples'], 
+                        self.cfg['rendering']['N_importance'], True)
+                    render_result = render_out['fine'] if 'fine' in render_out else render_out['coarse']
+                    group_output.append(render_result['rgb_map'])
+                image_rgb = jt.concat(group_output, 0)
+                image_rgb = image_rgb.reshape((render_h, render_w, 3))
+                render.append(image_rgb.permute(2, 0, 1))  # [3, h, w]
+                if save_dir is not None:
+                    predict = image_rgb.detach().numpy()
+                    _img = np.clip(predict, 0., 1.)
+                    _img = (_img * 255).astype(np.uint8)
+                    cv.imwrite(f"{save_dir}/test_{vid}.png", _img)
+            return render       
     def train(self):
         N_sample = self.cfg['rendering']['N_samples']
         N_refine = self.cfg['rendering']['N_importance']
@@ -152,7 +321,7 @@ class Infonerf:
             jt.gc()
 
             if it % self.cfg['training']['i_testset'] == 0:
-                test_save = os.path.join(self.exp_path, 'result', f"test_{it}")
+                test_save = os.path.join(self.exp_path, 'render_result', f"test_{it}")
                 #here change to all 8 to coincide with hw
                 self.run_testset(test_save, 8 if it > 0 else 50, 2)
                 self.model.train()
@@ -162,6 +331,31 @@ class Infonerf:
             # if it % self.cfg['training']['i_weights'] == 0 and it > 0:
             if it % self.cfg['training']['i_weights'] == 0:
                 print("Save ckpt")
-                self.model.save(os.path.join(self.exp_path, 'ckpt', f"model{it}.pkl"))
+                self.model.save(os.path.join(self.exp_path, 'nn_model', f"model{it}.pkl"))
                 if self.model_fine is not None:
-                    self.model_fine.save(os.path.join(self.exp_path, 'ckpt', f"model_fine{it}.pkl"))
+                    self.model_fine.save(os.path.join(self.exp_path, 'nn_model', f"model_fine{it}.pkl"))
+    #TODO, only 1 test function
+    def test(self, poses, ref=None, test_psnr=False, test_ssim=False, test_lpips=False, save_dir=None, downsample=2):
+        if poses.ndim == 2:
+            poses = poses.unsqueeze(0)
+        predict = self.render_image(poses, downsample, save_dir=save_dir)
+        ref = nn.resize(ref, size=(self.img_h // (2 ** downsample), self.img_w // (2 ** downsample)), mode='bilinear')
+        with jt.no_grad():
+            metric = {}
+            predict = jt.stack(predict, dim=0)  # [B, 3, H, W]
+            if ref is not None:
+                psnr_avg = ls.img2psnr_redefine(predict, ref)
+                metric['psnr'] = psnr_avg.item()
+            return metric
+
+    def run_testset(self, save_path, skip, downsample=2, no_metric=False):
+        self.model.eval()
+        if self.model_fine is not None:
+            self.model_fine.eval()
+        os.makedirs(save_path, exist_ok=True)
+        test_id = self.loaded_data['i_split'][2][::skip]
+        test_pose = self.loaded_data['poses'][test_id]
+        ref_images = self.loaded_data['imgs'][test_id]
+        #this should not be an individual function
+        metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, downsample)
+        print("Test: ", metric)

@@ -7,6 +7,7 @@ import os
 from tqdm import tqdm
 import cv2 as cv
 
+from InfoNerf import *
 ##this should be rewrite TOTALLY
 #TODO
 def render_video(ckpt_path):
@@ -36,9 +37,7 @@ if __name__=='__main__':
     jt.flags.use_cuda = 1
     jt.flags.use_tensorcore = 1
     jt.set_global_seed(0)
-    # train_cfg = load_config('configs/lego.toml', 'configs/base.toml')
-    # train_cfg["training"]["ckpt"] = "logs/lego_ent/ckpt/"
-    # trainer = Trainer(train_cfg)
-    # trainer.train()
+    Network = Infonerf('configs/lego.toml','configs/base.toml',"result/nn_model/")
+    Network.train()
     # trainer.run_testset(os.path.join(trainer.exp_path, 'test'), 8, 0)
     # render_video("logs/lego_ent/ckpt")
