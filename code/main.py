@@ -13,7 +13,7 @@ from InfoNerf import *
 def render_video(cfg_path,base_path,ckpt_path):
     network = Infonerf(cfg_path,base_path,ckpt_path)
     video_path = os.path.join(network.exp_path, 'video')
-    # network.run_testset(video_path, 1, 0)
+    # network.test(video_path, 1, 0)
 
     length = 600
     fps = 24
@@ -32,7 +32,7 @@ def render_video(cfg_path,base_path,ckpt_path):
 def check_PSNR(cfg_path,base_path,ckpt_path):
     network = Infonerf(cfg_path,base_path,ckpt_path)
     check_path = os.path.join(network.exp_path, 'check')
-    network.run_testset(check_path, 8, 2)
+    network.test(check_path, 8, 2)
 
 
 if __name__=='__main__':

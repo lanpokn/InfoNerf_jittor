@@ -66,7 +66,7 @@ class Infonerf:
             self.loss_fn['kl_smooth'] = ls.SmoothingLoss(self.cfg['info_loss'])
             self.info_lambda = self.cfg['info_loss']['info_lambda']
         self.loss_fn['img_loss'] = nn.MSELoss()
-    def render_image(self, poses, downsample=0, save_dir=None):
+    def render_image(self, poses, dsample_ratio=0, save_dir=None):
         def get_rays(H, W, focal, c2w, padding=None):
             """get rays in world coordinate of full image
             Args:
@@ -97,9 +97,9 @@ class Infonerf:
         with jt.no_grad():
             n_views = poses.shape[0]
             render = []
-            if downsample != 0:
-                render_h = self.img_h // (2 ** downsample)
-                render_w = self.img_w // (2 ** downsample)
+            if dsample_ratio != 0:
+                render_h = self.img_h // (2 ** dsample_ratio)
+                render_w = self.img_w // (2 ** dsample_ratio)
             else:
                 render_h, render_w = self.img_h, self.img_w
             focal = self.focal * render_h / self.img_h
@@ -336,33 +336,21 @@ class Infonerf:
 
     #     return result
     def render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
-    """
-    Volumetric rendering for rays.
 
-    Args:
-        rays_o (Tensor): Ray origins, shape [N_rays, 3].
-        rays_d (Tensor): Ray directions, shape [N_rays, 3].
-        N_samples (int): Number of samples for coarse rendering.
-        N_importance (int): Number of importance samples for fine rendering.
-        eval (bool): Whether in evaluation mode.
-
-    Returns:
-        dict: Rendered results containing 'coarse' and 'fine' (if N_importance > 0).
-    """
         def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0., white_bkgd=False,
                     out_alpha=False, out_sigma=False, out_dist=False, debug_save=False):
-            """Transforms model's predictions to semantically meaningful values.
-            Args:
-                raw: [num_rays, num_samples along ray, 4]. Prediction from model.
-                z_vals: [num_rays, num_samples along ray]. Integration time.
-                rays_d: [num_rays, 3]. Direction of each ray.
-            Returns:
-                rgb_map: [num_rays, 3]. Estimated RGB color of a ray.
-                disp_map: [num_rays]. Disparity map. Inverse of depth map.
-                acc_map: [num_rays]. Sum of weights along each ray.
-                weights: [num_rays, num_samples]. Weights assigned to each sampled color.
-                depth_map: [num_rays]. Estimated distance to object.
-            """    
+            # """Transforms model's predictions to semantically meaningful values.
+            # Args:
+            #     raw: [num_rays, num_samples along ray, 4]. Prediction from model.
+            #     z_vals: [num_rays, num_samples along ray]. Integration time.
+            #     rays_d: [num_rays, 3]. Direction of each ray.
+            # Returns:
+            #     rgb_map: [num_rays, 3]. Estimated RGB color of a ray.
+            #     disp_map: [num_rays]. Disparity map. Inverse of depth map.
+            #     acc_map: [num_rays]. Sum of weights along each ray.
+            #     weights: [num_rays, num_samples]. Weights assigned to each sampled color.
+            #     depth_map: [num_rays]. Estimated distance to object.
+            # """    
             def raw2alpha(raw, dists, act_fn=nn.relu):
                 return 1. - jt.exp(-act_fn(raw) * dists)
             # distance between sample points
@@ -592,13 +580,13 @@ class Infonerf:
         def print_and_save_results(it, loss_dict):
             # Print and save results periodically
             if it % self.cfg['training']['i_print'] == 0 and it > 0:
-                print(f"ITER {it}", loss_dict)
+                print(f", loss==>", loss_dict["loss"])
             jt.sync_all(True)
             jt.gc()
 
             if it % self.cfg['training']['i_testset'] == 0:
                 test_save = os.path.join(self.exp_path, 'render_result', f"test_{it}")
-                self.run_testset(test_save, 8, 2)
+                self.test(test_save, 8, 2)
                 self.model.train()
                 if self.model_fine is not None:
                     self.model_fine.train()
@@ -636,7 +624,7 @@ class Infonerf:
             adjust_info_lambda(it)
             # Print and save results periodically
             print_and_save_results(it, loss_dict)
-    def run_testset(self, save_path = None, skip = 8, downsample=2):
+    def test(self, save_path = None, skip = 8, dsample_ratio=2):
         self.model.eval()
         if self.model_fine is not None:
             self.model_fine.eval()
@@ -646,11 +634,11 @@ class Infonerf:
         test_pose = self.loaded_data['poses'][test_id]
         ref_images = self.loaded_data['imgs'][test_id]
         #this should not be an individual function
-        # metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, downsample)
+        # metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, dsample_ratio)
         if test_pose.ndim == 2:
             test_pose = test_pose.unsqueeze(0)
-        predict = self.render_image(test_pose, downsample, save_dir=save_path)
-        ref = nn.resize(ref_images, size=(self.img_h // (2 ** downsample), self.img_w // (2 ** downsample)), mode='bilinear')
+        predict = self.render_image(test_pose, dsample_ratio, save_dir=save_path)
+        ref = nn.resize(ref_images, size=(self.img_h // (2 ** dsample_ratio), self.img_w // (2 ** dsample_ratio)), mode='bilinear')
         with jt.no_grad():
             metric = {}
             predict = jt.stack(predict, dim=0)  # [B, 3, H, W]
