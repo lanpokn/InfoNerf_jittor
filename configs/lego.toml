@@ -1,4 +1,4 @@
-expname = "lego"
+expname = "lego2"
 basedir = "./result/"
 
 [dataset]
@@ -8,14 +8,14 @@ basedir = "./result/"
 [training]
   lr_decay = 250000
   N_rand = 256
-  N_iters = 10000
+  N_iters = 1000000
   netchunk = 196608
   precrop_iters = 1500
   precrop_frac = 0.5
   fewshot = 4
   train_scene = [26, 86, 2, 55]
 
-  i_testset = 1999
+  i_testset = 10000
   # ckpt = "./logs/lego_naive/ckpt"
  
 [rendering]

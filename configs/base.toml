@@ -20,9 +20,9 @@ basedir = "./result/"
     evalchunk = 196608
     ckpt = ""
 
-    i_print = 100
+    i_print = 1000
     i_img = 500
-    i_weights = 100
+    i_weights = 1000
     i_testset = 25000
     i_video = 1000000
 

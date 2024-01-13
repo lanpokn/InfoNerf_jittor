@@ -323,7 +323,8 @@ class Infonerf:
             if it % self.cfg['training']['i_testset'] == 0:
                 test_save = os.path.join(self.exp_path, 'render_result', f"test_{it}")
                 #here change to all 8 to coincide with hw
-                self.run_testset(test_save, 8 if it > 0 else 50, 2)
+                # self.run_testset(test_save, 8 if it > 0 else 50, 2)
+                self.run_testset(test_save, 8, 2)
                 self.model.train()
                 if self.model_fine is not None:
                     self.model_fine.train()
@@ -331,31 +332,29 @@ class Infonerf:
             # if it % self.cfg['training']['i_weights'] == 0 and it > 0:
             if it % self.cfg['training']['i_weights'] == 0:
                 print("Save ckpt")
-                self.model.save(os.path.join(self.exp_path, 'nn_model', f"model{it}.pkl"))
+                self.model.save(os.path.join(self.exp_path, 'ckpt', f"model{it}.pkl"))
                 if self.model_fine is not None:
-                    self.model_fine.save(os.path.join(self.exp_path, 'nn_model', f"model_fine{it}.pkl"))
-    #TODO, only 1 test function
-    def test(self, poses, ref=None, test_psnr=False, test_ssim=False, test_lpips=False, save_dir=None, downsample=2):
-        if poses.ndim == 2:
-            poses = poses.unsqueeze(0)
-        predict = self.render_image(poses, downsample, save_dir=save_dir)
-        ref = nn.resize(ref, size=(self.img_h // (2 ** downsample), self.img_w // (2 ** downsample)), mode='bilinear')
+                    self.model_fine.save(os.path.join(self.exp_path, 'ckpt', f"model_fine{it}.pkl"))
+
+    def run_testset(self, save_path = None, skip = 8, downsample=2):
+        self.model.eval()
+        if self.model_fine is not None:
+            self.model_fine.eval()
+        if save_path is not None:
+            os.makedirs(save_path, exist_ok=True)
+        test_id = self.loaded_data['i_split'][2][::skip]
+        test_pose = self.loaded_data['poses'][test_id]
+        ref_images = self.loaded_data['imgs'][test_id]
+        #this should not be an individual function
+        # metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, downsample)
+        if test_pose.ndim == 2:
+            test_pose = test_pose.unsqueeze(0)
+        predict = self.render_image(test_pose, downsample, save_dir=save_path)
+        ref = nn.resize(ref_images, size=(self.img_h // (2 ** downsample), self.img_w // (2 ** downsample)), mode='bilinear')
         with jt.no_grad():
             metric = {}
             predict = jt.stack(predict, dim=0)  # [B, 3, H, W]
             if ref is not None:
                 psnr_avg = ls.img2psnr_redefine(predict, ref)
                 metric['psnr'] = psnr_avg.item()
-            return metric
-
-    def run_testset(self, save_path, skip, downsample=2, no_metric=False):
-        self.model.eval()
-        if self.model_fine is not None:
-            self.model_fine.eval()
-        os.makedirs(save_path, exist_ok=True)
-        test_id = self.loaded_data['i_split'][2][::skip]
-        test_pose = self.loaded_data['poses'][test_id]
-        ref_images = self.loaded_data['imgs'][test_id]
-        #this should not be an individual function
-        metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, downsample)
         print("Test: ", metric)
