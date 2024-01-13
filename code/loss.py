@@ -24,23 +24,6 @@ def img2psnr_redefine(x, y):
     psnr = jt.stack(psnrs).mean()
     return psnr
 
-# def img2psnr_mask(x, y, mask):
-#     '''
-#     we redefine the PSNR function,
-#     [previous]
-#     average MSE -> PSNR(average MSE)
-    
-#     [new]
-#     average PSNR(each image pair)
-#     '''
-#     image_num = x.size(0)
-#     mses = ((x-y)**2).mean(-1)
-#     mses_sum = (mses*mask).reshape(image_num, -1).sum(-1)
-#     mses = mses_sum /mask.reshape(image_num, -1).sum(-1)
-#     psnrs = [mse2psnr(mse) for mse in mses]
-#     psnr = jt.mean(jt.stack(psnrs))
-#     return psnr
-
 #Ray Entropy Minimization Loss
 class EntropyLoss:
     def __init__(self, args):

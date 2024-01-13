@@ -136,8 +136,6 @@ def load_blender_data_ex(args):
         if isinstance(raw_data[k], np.ndarray):
             raw_data[k] = jt.array(raw_data[k])
     raw_data['imgs'] = raw_data['imgs'].permute(0, 3, 1, 2)
-    # jt.save(raw_data, os.path.join(args['datadir'], 'cache.bin'))
-    print("Data cached.")
     return raw_data
 
 

@@ -1,5 +1,9 @@
 #rewrite here
 #reference:https://github.com/itoshiko/InfoNeRF-jittor
+
+# In neural networks, the concept of a "fine network" is often associated with refining or enhancing the results obtained from a primary or "coarse network." Here are some common scenarios where fine networks are used:
+
+# Two-Stage Architecture: A two-stage architecture involves using a coarse network to obtain an initial prediction and then refining that prediction using a fine network. The coarse network provides a quick estimation, and the fine network performs detailed adjustments.
 import jittor as jt
 import jittor.nn as nn
 import glob
@@ -15,7 +19,6 @@ from nerf_base import *
 from utils import *
 from load_blender import *
 import loss as ls
-import ray_utils as ru
 ##nerf comes from others code, not changed
         
 class Infonerf:
@@ -26,9 +29,7 @@ class Infonerf:
         data_cfg.update(train_cfg)
         self.loaded_data = load_blender_data_ex(data_cfg)
         self.img_h, self.img_w, self.focal = self.loaded_data['calib']
-        print(f"Loaded blender: {data_cfg['datadir']}")
         self.exp_path = prepare_dir(self.cfg)
-        print('Exp path: ', self.exp_path)
         self.model, self.model_fine, self.embed_fn, self.embeddirs_fn = create_nerf(self.cfg)
         self.get_near_c2w = GetNearC2W(self.cfg['info_loss'])
         self.loss_fn = {}
@@ -55,11 +56,9 @@ class Infonerf:
         if self.cfg['training']['ckpt'] != "":
             model_name = self.cfg['training']['ckpt']
             self.model.load(model_name)
-            print(f"Load model parameters: {model_name}")
             if self.model_fine is not None:
                 model_fine_name = generate_fine_model_name(model_name)
                 self.model_fine.load(model_fine_name)
-                print(f"Load fine model parameters: {model_fine_name}")
     def init_loss(self):
         if self.cfg['entropy_loss']['use']:
             self.loss_fn['ent'] = ls.EntropyLoss(self.cfg['entropy_loss'])
@@ -67,7 +66,95 @@ class Infonerf:
             self.loss_fn['kl_smooth'] = ls.SmoothingLoss(self.cfg['info_loss'])
             self.info_lambda = self.cfg['info_loss']['info_lambda']
         self.loss_fn['img_loss'] = nn.MSELoss()
+    def render_image(self, poses, downsample=0, save_dir=None):
+        def get_rays(H, W, focal, c2w, padding=None):
+            """get rays in world coordinate of full image
+            Args:
+                H (int): height of target image
+                W (int): width of target image
+                focal (flaot): focal length of camera
+                c2w (jittor.Var): transform matrix from camera coordinate to world coordinate
+                padding (int, optional): padding border around the image. Defaults to None.
+
+            Returns:
+                tuple(jittor.Var[H, W, 3], jittor.Var[H, W, 3]): 
+                origin of rays, direction of rays, both transformed to world coordinate
+            """
+            # create pts in pixel coordinate
+            if padding is not None:
+                i, j = jt.meshgrid(jt.linspace(-padding, W-1+padding, W+2*padding), jt.linspace(-padding, H-1+padding, H+2*padding)) 
+            else:
+                i, j = jt.meshgrid(jt.linspace(0, W-1, W), jt.linspace(0, H-1, H))
+            i = jt.transpose(i, (1, 0))
+            j = jt.transpose(j, (1, 0))
+            # transform to camera coordinate
+            dirs = jt.stack([(i-W*.5)/focal, -(j-H*.5)/focal, -jt.ones_like(i)], -1)  # [H, W, 3]
+            # Rotate ray directions from camera frame to the world frame
+            rays_d =  dirs @ jt.transpose(c2w[:3, :3], (1, 0))
+            # Translate camera frame's origin to the world frame. It is the origin of all rays.
+            rays_o = c2w[:3, -1].repeat((H, W, 1))  # [H, W, 3]
+            return rays_o, rays_d
+        with jt.no_grad():
+            n_views = poses.shape[0]
+            render = []
+            if downsample != 0:
+                render_h = self.img_h // (2 ** downsample)
+                render_w = self.img_w // (2 ** downsample)
+            else:
+                render_h, render_w = self.img_h, self.img_w
+            focal = self.focal * render_h / self.img_h
+            for vid in tqdm(range(n_views)):
+                pose = poses[vid]
+                rays_o, rays_d = get_rays(render_h, render_w, focal, pose)
+                rays_o = rays_o.reshape((render_h * render_w, -1))
+                rays_d = rays_d.reshape((render_h * render_w, -1))
+
+                total_rays = render_h * render_w
+                group_size = self.cfg['training']['chunk']
+                group_num = (
+                    (total_rays // group_size) if (total_rays % group_size == 0) else (total_rays // group_size + 1))
+                if group_num == 0:
+                    group_num = 1
+                    group_size = total_rays
+
+                group_output = []
+                for gi in range(group_num):
+                    start = gi * group_size
+                    end = (gi + 1) * group_size
+                    end = (end if (end <= total_rays) else total_rays)
+                    render_out = self.render_rays(
+                        rays_o[start:end], rays_d[start:end], self.cfg['rendering']['N_samples'], 
+                        self.cfg['rendering']['N_importance'], True)
+                    render_result = render_out['fine'] if 'fine' in render_out else render_out['coarse']
+                    group_output.append(render_result['rgb_map'])
+                image_rgb = jt.concat(group_output, 0)
+                image_rgb = image_rgb.reshape((render_h, render_w, 3))
+                render.append(image_rgb.permute(2, 0, 1))  # [3, h, w]
+                if save_dir is not None:
+                    predict = image_rgb.detach().numpy()
+                    _img = np.clip(predict, 0., 1.)
+                    _img = (_img * 255).astype(np.uint8)
+                    cv.imwrite(f"{save_dir}/test_{vid}.png", _img)
+            return render
+    
     def gen_train_data(self):
+        def sample_nearby_ray(H, W, focal, c2w, pix_coord, distance):
+            new_x, new_y = pix_coord[..., 0], pix_coord[..., 1]
+            pts_shape = pix_coord.shape[:-1]
+            offset = np.random.randint(1, distance * 2 + 1)
+            offset_x = jt.randint(0, offset + 1, pts_shape)
+            offset_y = offset - offset_x
+            
+            new_x += offset_x
+            new_y += offset_y
+            new_pix_coord = jt.stack([new_x, new_y], dim=-1)
+
+            dirs = jt.stack([(new_x-W*.5) / focal, -(new_y-H*.5) / focal, -jt.ones_like(new_x)], -1)  # [..., 3]
+            # Rotate ray directions from camera frame to the world frame
+            rays_d = jt.matmul(dirs, c2w[:3, :3])
+            # Translate camera frame's origin to the world frame. It is the origin of all rays.
+            rays_o = c2w[:3, -1].repeat(list(dirs.shape[:-1]) + [1, ])  # [..., 3]
+            return rays_o, rays_d, new_pix_coord
         def random_sample_ray(H, W, focal, c2w, cnt, pix_coord=None, center_crop=1.0):
             """Sample rays in target view
 
@@ -108,11 +195,16 @@ class Infonerf:
                 rays_o_near, rays_d_near, _ = random_sample_ray(
                     img_h, img_w, focal, rgb_near_pose, N_rand, pix_coord=coord)
             else:
-                rays_o_near, rays_d_near, _ = ru.sample_nearby_ray(
+                rays_o_near, rays_d_near, _ = sample_nearby_ray(
                     img_h, img_w, focal, rgb_pose, coord, loaded_ray['info_loss_pixel_range'])
             loaded_ray.update({'rays_o_near': rays_o_near, 'rays_d_near': rays_d_near})
         def sample_target_rgb(coord, target, loaded_ray):
-            coord = ru.normalize_pts(coord, self.img_h, self.img_w)  # normalize to [-1, 1] for sampling
+            def normalize_pts(pts, H, W):
+                pts[..., 0] = pts[..., 0] / W
+                pts[..., 1] = pts[..., 1] / H
+                pts = pts * 2.0 - 1.0
+                return pts
+            coord = normalize_pts(coord, self.img_h, self.img_w)  # normalize to [-1, 1] for sampling
             coord = coord.unsqueeze(0).unsqueeze(0)  # [1, 1, N_rand, 2]
             target_rgb = nn.grid_sampler_2d(target, coord, 'bilinear', 'zeros', False)  # [1, 3, 1, N_rand]
             target_rgb = target_rgb.squeeze(0).squeeze(-2)
@@ -130,7 +222,7 @@ class Infonerf:
                 rays_o_ent_near, rays_d_ent_near, _ = random_sample_ray(
                     img_h, img_w, focal, ent_near_pose, n_entropy, pix_coord=coord_ent)
             else:
-                rays_o_ent_near, rays_d_ent_near, _ = ru.sample_nearby_ray(
+                rays_o_ent_near, rays_d_ent_near, _ = sample_nearby_ray(
                     img_h, img_w, focal, rgb_pose_e, coord_ent, loaded_ray['info_loss_pixel_range'])
             loaded_ray.update({'rays_o_ent_near': rays_o_ent_near, 'rays_d_ent_near': rays_d_ent_near})
         
@@ -167,128 +259,288 @@ class Infonerf:
                                         loaded_ray['coord_ent'], 
                                         self.cfg['info_loss']['sampling_method'], loaded_ray)
         return loaded_ray
-    def render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
-        """Volumetric rendering for rays
-        """
-        result = {}
-        # calculate sample points along rays
-        near, far = self.cfg['rendering']['near'], self.cfg['rendering']['far']
-        pts, z_vals = ru.generate_pts(
-            rays_o, rays_d, near, far, N_samples, 
-            perturb=((not eval) and (self.cfg['rendering']['perturb'])))
-        if self.cfg['rendering']['use_viewdirs']:
-            view_dirs = rays_d / jt.norm(rays_d, dim=-1, keepdims=True)
-            view_dirs = view_dirs.unsqueeze(1)
-            view_dirs = jt.repeat(view_dirs, (1, N_samples, 1))  # [N_rays, N_samples, 3]
-        else:
-            view_dirs = None
-        raw_out = run_network(
-            pts, view_dirs, self.model, self.embed_fn, self.embeddirs_fn, 
-            self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
-        decoded_out = ru.raw2outputs(
-            raw_out, z_vals, rays_d, 
-            self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
-            self.cfg['dataset']['white_bkgd'],
-            out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
-        result.update({'coarse': decoded_out})
+    # def render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
+    #     """
+    #     Volumetric rendering for rays.
 
-        if N_importance > 0:
-            weights = decoded_out['weights']
+    #     Args:
+    #         rays_o (Tensor): Ray origins, shape [N_rays, 3].
+    #         rays_d (Tensor): Ray directions, shape [N_rays, 3].
+    #         N_samples (int): Number of samples for coarse rendering.
+    #         N_importance (int): Number of importance samples for fine rendering.
+    #         eval (bool): Whether in evaluation mode.
+
+    #     Returns:
+    #         dict: Rendered results containing 'coarse' and 'fine' (if N_importance > 0).
+    #     """
+    #     result = {}
+
+    #     # Calculate sample points along rays
+    #     near, far = self.cfg['rendering']['near'], self.cfg['rendering']['far']
+    #     pts, z_vals = ru.generate_pts(
+    #         rays_o, rays_d, near, far, N_samples, 
+    #         perturb=((not eval) and (self.cfg['rendering']['perturb'])))
+
+    #     # Handle view directions if enabled
+    #     if self.cfg['rendering']['use_viewdirs']:
+    #         view_dirs = rays_d / jt.norm(rays_d, dim=-1, keepdims=True)
+    #         view_dirs = view_dirs.unsqueeze(1)
+    #         view_dirs = jt.repeat(view_dirs, (1, N_samples, 1))  # [N_rays, N_samples, 3]
+    #     else:
+    #         view_dirs = None
+
+    #     # Run coarse rendering network
+    #     raw_out = run_network(
+    #         pts, view_dirs, self.model, self.embed_fn, self.embeddirs_fn, 
+    #         self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
+
+    #     # Decode and store results for coarse rendering
+    #     decoded_out = ru.raw2outputs(
+    #         raw_out, z_vals, rays_d, 
+    #         self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
+    #         self.cfg['dataset']['white_bkgd'],
+    #         out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
+        
+    #     result.update({'coarse': decoded_out})
+
+    #     # Run fine rendering network if N_importance > 0
+    #     if N_importance > 0:
+    #         weights = decoded_out['weights']
+    #         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+    #         z_samples = ru.sample_pdf(
+    #             z_vals_mid, weights[...,1:-1], N_importance, 
+    #             det=((not eval) and (self.cfg['rendering']['perturb'])))
+    #         z_samples = z_samples.stop_grad()
+    #         _, z_vals_re = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
+            
+    #         # Calculate sample points for fine rendering
+    #         pts_re = rays_o[..., None, :] + rays_d[..., None, :] * z_vals_re[..., :, None]
+    #         if view_dirs is not None:
+    #             view_dirs_re = jt.repeat(view_dirs[:, :1, :], (1, N_samples + N_importance, 1))
+
+    #         # Run fine rendering network
+    #         raw_re = run_network(
+    #             pts_re, view_dirs_re, 
+    #             self.model_fine if self.model_fine is not None else self.model, 
+    #             self.embed_fn, self.embeddirs_fn, 
+    #             self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
+            
+    #         # Decode and store results for fine rendering
+    #         decoded_out_re = ru.raw2outputs(
+    #             raw_re, z_vals_re, rays_d, 
+    #             self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
+    #             self.cfg['dataset']['white_bkgd'],
+    #             out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
+            
+    #         result.update({'fine': decoded_out_re})
+
+    #     return result
+    def render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
+    """
+    Volumetric rendering for rays.
+
+    Args:
+        rays_o (Tensor): Ray origins, shape [N_rays, 3].
+        rays_d (Tensor): Ray directions, shape [N_rays, 3].
+        N_samples (int): Number of samples for coarse rendering.
+        N_importance (int): Number of importance samples for fine rendering.
+        eval (bool): Whether in evaluation mode.
+
+    Returns:
+        dict: Rendered results containing 'coarse' and 'fine' (if N_importance > 0).
+    """
+        def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0., white_bkgd=False,
+                    out_alpha=False, out_sigma=False, out_dist=False, debug_save=False):
+            """Transforms model's predictions to semantically meaningful values.
+            Args:
+                raw: [num_rays, num_samples along ray, 4]. Prediction from model.
+                z_vals: [num_rays, num_samples along ray]. Integration time.
+                rays_d: [num_rays, 3]. Direction of each ray.
+            Returns:
+                rgb_map: [num_rays, 3]. Estimated RGB color of a ray.
+                disp_map: [num_rays]. Disparity map. Inverse of depth map.
+                acc_map: [num_rays]. Sum of weights along each ray.
+                weights: [num_rays, num_samples]. Weights assigned to each sampled color.
+                depth_map: [num_rays]. Estimated distance to object.
+            """    
+            def raw2alpha(raw, dists, act_fn=nn.relu):
+                return 1. - jt.exp(-act_fn(raw) * dists)
+            # distance between sample points
+            dists = z_vals[..., 1:] - z_vals[..., :-1] 
+            dists = jt.concat([dists, jt.expand(jt.array([1e10]), dists[..., :1].shape)], -1)  # [N_rays, N_samples]
+            dists = dists * jt.norm(rays_d, dim=-1, keepdims=True)  # [N_rays, N_samples]
+
+            rgb = jt.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
+            noise = 0.
+            if raw_noise_std > 0.:
+                noise = jt.randn(raw[..., 3].shape) * raw_noise_std
+
+            # alpha: 1. - exp(-delta * sigma)
+            alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
+            sigma = nn.relu(raw[..., 3] + noise)  # for sigma output
+            # transmission, integral(sigma * delta) * alpha
+            weights = alpha * jt.cumprod(jt.concat([jt.ones((alpha.shape[0], 1)), 1.-alpha + 1e-10], -1), -1)[:, :-1]
+            # do the integral to obtain rgb output
+            rgb_map = jt.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
+
+            depth_map = jt.sum(weights * z_vals, -1)
+            disp_map = 1. / jt.maximum(1e-10 * jt.ones_like(depth_map), depth_map / jt.sum(weights, -1))
+            acc_map = jt.sum(weights, -1)
+            
+            if white_bkgd:
+                rgb_map = rgb_map + (1. - acc_map[...,None])
+            
+            output = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map':acc_map, 'weights': weights, 'depth_map': depth_map}
+            if out_alpha:
+                output.update({'alpha': alpha})
+            if out_sigma:
+                output.update({'sigma': sigma})
+            if out_dist:
+                output.update({'dists': dists})
+            return output
+        def calculate_sample_points(rays_o, rays_d, N_samples, near, far, eval, perturb):
+            """Calculate sample points along rays."""
+            def generate_pts(rays_o, rays_d, near, far, N_samples, lindisp=False, perturb=False):
+                near, far = near * jt.ones_like(rays_d[..., :1]), far * jt.ones_like(rays_d[..., :1])
+
+                t_vals = jt.linspace(0., 1., steps=N_samples)
+                if not lindisp:
+                    z_vals = near * (1. - t_vals) + far * (t_vals)
+                else:
+                    z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
+
+                # not sample at fixed z, but random position betwween [z, z+1]
+                if perturb:
+                    # get intervals between samples
+                    mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+                    upper = jt.concat([mids, z_vals[..., -1:]], -1)
+                    lower = jt.concat([z_vals[..., :1], mids], -1)
+                    # stratified samples in those intervals
+                    t_rand = jt.rand(z_vals.shape)
+                    z_vals = lower + (upper - lower) * t_rand
+                
+                pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None] # [N_rays, N_samples, 3]
+                return pts, z_vals
+            pts, z_vals = generate_pts(
+                rays_o, rays_d, near, far, N_samples,
+                perturb=((not eval) and (perturb)))
+            
+            return pts, z_vals
+        def handle_view_directions(rays_d, N_samples, use_viewdirs):
+            """Handle view directions if enabled."""
+            if use_viewdirs:
+                view_dirs = rays_d / jt.norm(rays_d, dim=-1, keepdims=True)
+                view_dirs = view_dirs.unsqueeze(1)
+                view_dirs = jt.repeat(view_dirs, (1, N_samples, 1))  # [N_rays, N_samples, 3]
+            else:
+                view_dirs = None
+
+            return view_dirs
+        def calculate_fine_sample_points(N_importance, weights, z_vals, eval, perturb):
+            """Calculate sample points for fine rendering."""
+            def sample_pdf(bins, weights, N_samples, det=False):
+                # Get pdf
+                weights = weights + 1e-5 # prevent nans
+                pdf = weights / jt.sum(weights, -1, keepdims=True)
+                cdf = jt.cumsum(pdf, -1)
+                cdf = jt.concat([jt.zeros_like(cdf[..., :1]), cdf], -1)  # (batch, len(bins))
+
+                # Take uniform samples
+                if det:
+                    u = jt.linspace(0., 1., steps=N_samples)
+                    u = u.expand(list(cdf.shape[:-1]) + [N_samples])
+                else:
+                    u = jt.rand(list(cdf.shape[:-1]) + [N_samples])
+
+                # Invert CDF
+                # u = u.contiguous()
+                inds = jt.searchsorted(cdf, u, right=True)
+                below = jt.maximum(jt.zeros_like(inds-1), inds-1)
+                above = jt.minimum((cdf.shape[-1]-1) * jt.ones_like(inds), inds)
+                inds_g = jt.stack([below, above], -1)  # (batch, N_samples, 2)
+
+                # cdf_g = tf.gather(cdf, inds_g, axis=-1, batch_dims=len(inds_g.shape)-2)
+                # bins_g = tf.gather(bins, inds_g, axis=-1, batch_dims=len(inds_g.shape)-2)
+                matched_shape = [inds_g.shape[0], inds_g.shape[1], cdf.shape[-1]]
+                cdf_g = jt.gather(cdf.unsqueeze(1).expand(matched_shape), 2, inds_g)
+                bins_g = jt.gather(bins.unsqueeze(1).expand(matched_shape), 2, inds_g)
+
+                denom = (cdf_g[...,1]-cdf_g[...,0])
+                denom = jt.where(denom<1e-5, jt.ones_like(denom), denom)
+                t = (u-cdf_g[...,0])/denom
+                samples = bins_g[...,0] + t * (bins_g[...,1]-bins_g[...,0])
+
+                return samples
+
             z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-            z_samples = ru.sample_pdf(
-                z_vals_mid, weights[...,1:-1], N_importance, 
-                det=((not eval) and (self.cfg['rendering']['perturb'])))
+            z_samples = sample_pdf(
+                z_vals_mid, weights[..., 1:-1], N_importance,
+                det=((not eval) and (perturb)))
             z_samples = z_samples.stop_grad()
             _, z_vals_re = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
-            
-            # [N_rays, N_samples + N_importance, 3]
+
+            return z_vals_re
+        result = {}
+
+        # Calculate sample points along rays
+        near, far = self.cfg['rendering']['near'], self.cfg['rendering']['far']
+        pts, z_vals = calculate_sample_points(rays_o, rays_d, N_samples, near, far,
+                                            eval, self.cfg['rendering']['perturb'])
+
+        # Handle view directions if enabled
+        view_dirs = handle_view_directions(rays_d, N_samples, self.cfg['rendering']['use_viewdirs'])
+
+        # Run coarse rendering network
+        raw_out = run_network(
+            pts, view_dirs, self.model, self.embed_fn, self.embeddirs_fn,
+            self.cfg['training']['netchunk'] if not eval else  self.cfg['training']['evalchunk'])
+        # Decode and store results for coarse rendering
+        decoded_out = raw2outputs(
+            raw_out, z_vals, rays_d,
+            self.cfg['rendering']['raw_noise_std'] if not eval else 0.,
+            self.cfg['dataset']['white_bkgd'],
+            out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
+
+        result.update({'coarse': decoded_out})
+
+        # Run fine rendering network if N_importance > 0
+        if N_importance > 0:
+            weights = decoded_out['weights']
+            z_vals_re = calculate_fine_sample_points(N_importance, weights, z_vals, eval, self.cfg['rendering']['perturb'])
+
+            # Calculate sample points for fine rendering
             pts_re = rays_o[..., None, :] + rays_d[..., None, :] * z_vals_re[..., :, None]
             if view_dirs is not None:
-                # [N_rays, N_samples + N_importance, 3]
                 view_dirs_re = jt.repeat(view_dirs[:, :1, :], (1, N_samples + N_importance, 1))
             raw_re = run_network(
-                pts_re, view_dirs_re, 
-                self.model_fine if self.model_fine is not None else self.model, 
-                self.embed_fn, self.embeddirs_fn, 
+                pts_re, view_dirs_re,
+                self.model_fine if self.model_fine is not None else self.model,
+                self.embed_fn, self.embeddirs_fn,
                 self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
-            decoded_out_re = ru.raw2outputs(
-                raw_re, z_vals_re, rays_d, 
-                self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
+            # Decode and store results for fine rendering
+            decoded_out_re = raw2outputs(
+                raw_re, z_vals_re, rays_d,
+                self.cfg['rendering']['raw_noise_std'] if not eval else 0.,
                 self.cfg['dataset']['white_bkgd'],
                 out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
+
             result.update({'fine': decoded_out_re})
 
         return result
-
-    def render_image(self, poses, downsample=0, save_dir=None):
-        with jt.no_grad():
-            n_views = poses.shape[0]
-            render = []
-            if downsample != 0:
-                render_h = self.img_h // (2 ** downsample)
-                render_w = self.img_w // (2 ** downsample)
-            else:
-                render_h, render_w = self.img_h, self.img_w
-            focal = self.focal * render_h / self.img_h
-            for vid in tqdm(range(n_views)):
-                pose = poses[vid]
-                rays_o, rays_d = ru.get_rays(render_h, render_w, focal, pose)
-                rays_o = rays_o.reshape((render_h * render_w, -1))
-                rays_d = rays_d.reshape((render_h * render_w, -1))
-
-                total_rays = render_h * render_w
-                group_size = self.cfg['training']['chunk']
-                group_num = (
-                    (total_rays // group_size) if (total_rays % group_size == 0) else (total_rays // group_size + 1))
-                if group_num == 0:
-                    group_num = 1
-                    group_size = total_rays
-
-                group_output = []
-                for gi in range(group_num):
-                    start = gi * group_size
-                    end = (gi + 1) * group_size
-                    end = (end if (end <= total_rays) else total_rays)
-                    render_out = self.render_rays(
-                        rays_o[start:end], rays_d[start:end], self.cfg['rendering']['N_samples'], 
-                        self.cfg['rendering']['N_importance'], True)
-                    render_result = render_out['fine'] if 'fine' in render_out else render_out['coarse']
-                    group_output.append(render_result['rgb_map'])
-                image_rgb = jt.concat(group_output, 0)
-                image_rgb = image_rgb.reshape((render_h, render_w, 3))
-                render.append(image_rgb.permute(2, 0, 1))  # [3, h, w]
-                if save_dir is not None:
-                    predict = image_rgb.detach().numpy()
-                    _img = np.clip(predict, 0., 1.)
-                    _img = (_img * 255).astype(np.uint8)
-                    cv.imwrite(f"{save_dir}/test_{vid}.png", _img)
-            return render       
+       
     def train(self):
-        N_sample = self.cfg['rendering']['N_samples']
-        N_refine = self.cfg['rendering']['N_importance']
-        N_rays = self.cfg['training']['N_rand']
-        N_entropy = self.cfg['entropy_loss']['N_entropy']
-        self.model.train()
-        if self.model_fine is not None:
-            self.model_fine.train()
-        for it in range(self.cfg['training']['N_iters']):
-            sys.stdout.write(f"\riteration: {it}")
-            sys.stdout.flush()
-            self.it_time = it
-            train_data = self.gen_train_data()
-            all_rays_o = []
-            all_rays_d = []
-            for _entry in ['rays_o', 'rays_o_near', 'rays_o_ent', 'rays_o_ent_near']:
-                if _entry in train_data:
-                    all_rays_o.append(train_data[_entry])
-            for _entry in ['rays_d', 'rays_d_near', 'rays_d_ent', 'rays_d_ent_near']:
-                if _entry in train_data:
-                    all_rays_d.append(train_data[_entry])
-            all_rays_o = jt.concat(all_rays_o, dim=0)  # [N, 3]
-            all_rays_d = jt.concat(all_rays_d, dim=0)  # [N, 3]
-
-            render_out = self.render_rays(all_rays_o, all_rays_d, N_sample, N_refine)
-
+        # Initialize training parameters
+        def collect_rays(train_data, N_rays, N_entropy):
+            # Collect ray origins and directions for rendering
+            all_rays_o = concatenate_rays(train_data, ['rays_o', 'rays_o_near', 'rays_o_ent', 'rays_o_ent_near'], N_rays)
+            all_rays_d = concatenate_rays(train_data, ['rays_d', 'rays_d_near', 'rays_d_ent', 'rays_d_ent_near'], N_rays)
+            return all_rays_o, all_rays_d
+        def concatenate_rays(train_data, entries, N_rays):
+            # Concatenate ray origins or directions based on the specified entries
+            rays_list = [train_data[_entry] for _entry in entries if _entry in train_data]
+            concatenated_rays = jt.concat(rays_list, dim=0)
+            return concatenated_rays
+        def calculate_losses(render_out, train_data, N_rays, N_entropy, it):
             total_loss = 0.
             loss_dict = {}
             # image loss
@@ -330,33 +582,15 @@ class Infonerf:
 
                 entropy_ray_zvals_loss = self.loss_fn['ent'].ray_zvals(alpha_raw, acc_raw)
                 loss_dict['entropy_ray_zvals'] = entropy_ray_zvals_loss.item()
-                total_loss += self.cfg['entropy_loss']['entropy_ray_zvals_lambda'] * entropy_ray_zvals_loss
-
-            # Infomation Gain Reduction Loss
-            info_iter = (it < self.cfg['info_loss']['info_end_iter']) if self.cfg['info_loss']['info_end_iter'] > 0 else True
-            if self.cfg['info_loss']['use'] and info_iter:
-                alpha_raw = render_out['fine']['alpha'] \
-                    if 'fine' in render_out else render_out['coarse']['alpha']
-                if self.cfg['entropy_loss']['use']:
-                    alpha_1 = jt.concat([alpha_raw[:N_rays], alpha_raw[2*N_rays:2*N_rays+N_entropy]], dim=0)
-                    alpha_2 = jt.concat([alpha_raw[N_rays:2*N_rays], alpha_raw[2*N_rays+N_entropy:]], dim=0)
-                    info_loss = self.loss_fn['kl_smooth'](alpha_1, alpha_2)
-                else:
-                    info_loss = self.loss_fn['kl_smooth'](alpha_raw[:N_rays], alpha_raw[N_rays:2*N_rays])
-                loss_dict['KL_loss'] = info_loss.item()
-                total_loss += self.info_lambda * info_loss
             loss_dict.update({"loss": total_loss.item()})
             jt.sync_all(True)
-            self.optimizer.step(total_loss)
-
-            # update learning rate
-            new_lr = lr=self.cfg['training']['lr'] * (0.1 ** (it / self.cfg['training']['lr_decay']))
-            self.optimizer.lr = new_lr
-
-            # adjust lambda of Infomation Gain Reduction Loss
+            return total_loss, loss_dict
+        def adjust_info_lambda(it):
+            # Adjust lambda of Information Gain Reduction Loss
             if it > 0 and it % self.cfg['info_loss']['reduce_step_size'] == 0 and self.cfg['info_loss']['use']:
                 self.info_lambda *= self.cfg['info_loss']['reduce_step_rate']
-            
+        def print_and_save_results(it, loss_dict):
+            # Print and save results periodically
             if it % self.cfg['training']['i_print'] == 0 and it > 0:
                 print(f"ITER {it}", loss_dict)
             jt.sync_all(True)
@@ -364,20 +598,44 @@ class Infonerf:
 
             if it % self.cfg['training']['i_testset'] == 0:
                 test_save = os.path.join(self.exp_path, 'render_result', f"test_{it}")
-                #here change to all 8 to coincide with hw
-                # self.run_testset(test_save, 8 if it > 0 else 50, 2)
                 self.run_testset(test_save, 8, 2)
                 self.model.train()
                 if self.model_fine is not None:
                     self.model_fine.train()
 
-            # if it % self.cfg['training']['i_weights'] == 0 and it > 0:
             if it % self.cfg['training']['i_weights'] == 0:
-                print("Save ckpt")
+                print("nn model saved as pkl")
                 self.model.save(os.path.join(self.exp_path, 'ckpt', f"model{it}.pkl"))
                 if self.model_fine is not None:
                     self.model_fine.save(os.path.join(self.exp_path, 'ckpt', f"model_fine{it}.pkl"))
-
+        N_sample = self.cfg['rendering']['N_samples']
+        N_refine = self.cfg['rendering']['N_importance']
+        N_rays = self.cfg['training']['N_rand']
+        N_entropy = self.cfg['entropy_loss']['N_entropy']
+        # Set the model to training mode
+        self.model.train()
+        if self.model_fine is not None:
+            self.model_fine.train()
+        # Training loop
+        for it in range(self.cfg['training']['N_iters']):
+            sys.stdout.write(f"\riteration: {it}")
+            sys.stdout.flush()
+            self.it_time = it
+            # Generate training data
+            train_data = self.gen_train_data()
+            all_rays_o, all_rays_d =collect_rays(train_data, N_rays, N_entropy)
+            # Render rays and calculate losses
+            render_out = self.render_rays(all_rays_o, all_rays_d, N_sample, N_refine)
+            total_loss, loss_dict =calculate_losses(render_out, train_data, N_rays, N_entropy, it)
+            # Perform optimization step
+            self.optimizer.step(total_loss)
+            # Update learning rate
+            new_lr = self.cfg['training']['lr'] * (0.1 ** (it / self.cfg['training']['lr_decay']))
+            self.optimizer.lr = new_lr
+            # Adjust lambda of Information Gain Reduction Loss
+            adjust_info_lambda(it)
+            # Print and save results periodically
+            print_and_save_results(it, loss_dict)
     def run_testset(self, save_path = None, skip = 8, downsample=2):
         self.model.eval()
         if self.model_fine is not None:
@@ -399,30 +657,4 @@ class Infonerf:
             if ref is not None:
                 psnr_avg = ls.img2psnr_redefine(predict, ref)
                 metric['psnr'] = psnr_avg.item()
-        print("Test: ", metric)
-
-    # #TODO, only 1 test function
-    # def test(self, poses, ref=None, test_psnr=False, test_ssim=False, test_lpips=False, save_dir=None, downsample=2):
-    #     if poses.ndim == 2:
-    #         poses = poses.unsqueeze(0)
-    #     predict = self.render_image(poses, downsample, save_dir=save_dir)
-    #     ref = nn.resize(ref, size=(self.img_h // (2 ** downsample), self.img_w // (2 ** downsample)), mode='bilinear')
-    #     with jt.no_grad():
-    #         metric = {}
-    #         predict = jt.stack(predict, dim=0)  # [B, 3, H, W]
-    #         if ref is not None:
-    #             psnr_avg = ls.img2psnr_redefine(predict, ref)
-    #             metric['psnr'] = psnr_avg.item()
-    #         return metric
-
-    # def run_testset(self, save_path, skip, downsample=2, no_metric=False):
-    #     self.model.eval()
-    #     if self.model_fine is not None:
-    #         self.model_fine.eval()
-    #     os.makedirs(save_path, exist_ok=True)
-    #     test_id = self.loaded_data['i_split'][2][::skip]
-    #     test_pose = self.loaded_data['poses'][test_id]
-    #     ref_images = self.loaded_data['imgs'][test_id]
-    #     #this should not be an individual function
-    #     metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, downsample)
-    #     print("Test: ", metric)
+        print("Metric result is ", metric)
