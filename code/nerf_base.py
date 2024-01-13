@@ -63,6 +63,7 @@ class NeRF_network(nn.Module):
             outputs = self.output_linear(h)
 
         return outputs 
+    
 def create_nerf(cfg):
     cfg_ren = cfg['rendering']
     cfg_train = cfg['training']
@@ -90,37 +91,41 @@ def create_nerf(cfg):
 
 def run_network(inputs, viewdirs, model, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Run NeRF model (embedding + MLP)
-    inputs: [..., 3]
-    viewdirs: [..., 3]
+    
+    Args:
+        inputs: Tensor representing input points' coordinates, shape [..., 3]
+        viewdirs: Tensor representing viewing directions, shape [..., 3]
+        model: Neural network model (MLP)
+        embed_fn: Embedding function for input points
+        embeddirs_fn: Embedding function for viewing directions
+        netchunk: Number of points processed in each iteration
+    
+    Returns:
+        Tensor: Output of the NeRF model, reshaped to match input shape
+    
     """
     use_dir = (viewdirs is not None) and (embeddirs_fn is not None)
-    input_shape = inputs.shape
-    point_num = 1
-    for _d in range(len(input_shape) - 1): point_num *= input_shape[_d]
+    
+    point_num = inputs.reshape(-1, inputs.shape[-1]).shape[0]
     group_size = netchunk
-    group_num = (
-        (point_num // group_size) if (point_num % group_size == 0) else (point_num // group_size + 1))
-    if group_num == 0:
-        group_num = 1
-        group_size = point_num
-
+    group_num = (point_num + group_size - 1) // group_size
+    
     pt_group_output = []
-    inputs = inputs.reshape([-1, input_shape[-1]])  # [N, 3], flatten points
-    if use_dir:
-        viewdirs = viewdirs.reshape([-1, viewdirs.shape[-1]])  # [N, 3]
-    for gi in range(group_num):
-        start = gi * group_size
-        end = (gi + 1) * group_size
-        end = (end if (end <= point_num) else point_num)
 
-        pt_group = inputs[start:end, :]  # [group_p_num, 3]
-        embedded = embed_fn(pt_group)  # [group_p_num, ch]
+    inputs_flat = inputs.reshape(-1, inputs.shape[-1])
+    viewdirs_flat = viewdirs.reshape(-1, viewdirs.shape[-1]) if use_dir else None
+
+    for gi in range(group_num):
+        start, end = gi * group_size, (gi + 1) * group_size
+        pt_group = inputs_flat[start:end, :]
+        embedded = embed_fn(pt_group)
 
         if use_dir:
-            dir_group = viewdirs[start:end, :]  # [group_p_num, 3]
-            embedded_dirs = embeddirs_fn(dir_group)  # [group_p_num, ch]
+            dir_group = viewdirs_flat[start:end, :]
+            embedded_dirs = embeddirs_fn(dir_group)
             embedded = jt.concat([embedded, embedded_dirs], dim=-1)
-        pt_group_output.append(model(embedded))  # [group_p_num, out_ch]
-    
-    output_flat = jt.concat(pt_group_output, dim=0)  # [N, , out_ch]
-    return jt.reshape(output_flat, list(input_shape[:-1]) + [output_flat.shape[-1], ])
+
+        pt_group_output.append(model(embedded))
+
+    output_flat = jt.concat(pt_group_output, dim=0)
+    return jt.reshape(output_flat, list(inputs.shape[:-1]) + [output_flat.shape[-1], ])

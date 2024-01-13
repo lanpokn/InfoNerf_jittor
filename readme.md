@@ -9,3 +9,4 @@ https://github.com/itoshiko/InfoNeRF-jittor
 5.删除除psnr外的metric，因为大作业并没有要求相关指标
 #TODO
 6.类型的全面升级。原本的代码有nerf，有train，就是没有infonerf，让人摸不到头脑。因此新版代码在此处进行了全面升级，将原本的nerf和新版infonerf都抽象出来，重写几乎整个train流程
+7.run_network删除外循环来提速

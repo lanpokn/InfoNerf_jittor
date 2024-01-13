@@ -39,13 +39,25 @@ class Infonerf:
         self.load_ckpt()
     #load a specific model
     def load_ckpt(self):
+        def generate_fine_model_name(model_name):
+            base_name, extension = model_name.rsplit('.', 1)
+            
+            # Find the index of "model" in the base name
+            model_index = base_name.find("model")
+            
+            # Check if "model" is found and insert "_fine" after it
+            if model_index != -1:
+                fine_model_name = f"{base_name[:model_index + 5]}_fine{base_name[model_index + 5:]}.{extension}"
+                return fine_model_name
+            else:
+                # If "model" is not found, return the original name
+                return model_name
         if self.cfg['training']['ckpt'] != "":
-            #TODO, need specific?
             model_name = self.cfg['training']['ckpt']
             self.model.load(model_name)
             print(f"Load model parameters: {model_name}")
             if self.model_fine is not None:
-                model_fine_name = self.cfg['training']['ckpt']
+                model_fine_name = generate_fine_model_name(model_name)
                 self.model_fine.load(model_fine_name)
                 print(f"Load fine model parameters: {model_fine_name}")
     def init_loss(self):
@@ -56,6 +68,72 @@ class Infonerf:
             self.info_lambda = self.cfg['info_loss']['info_lambda']
         self.loss_fn['img_loss'] = nn.MSELoss()
     def gen_train_data(self):
+        def random_sample_ray(H, W, focal, c2w, cnt, pix_coord=None, center_crop=1.0):
+            """Sample rays in target view
+
+            Args:
+                H (int): image height
+                W (int): image width
+                focal (float): focal length
+                c2w (jt.Var): transform matrix from camera to world
+                cnt (int): number of sample points
+                pix_coord (jt.Var, optional): pixel coords of sample points. If None, random 
+                points will be sampled. Defaults to None.
+                center_crop (float, optional): sample in center area. Defaults to 1.0.
+
+            Returns:
+                tuple: rays_o ([cnt, 3]), rays_d ([cnt, 3]), 
+                pix_coord ([cnt, 2], in pixel coords, unnormalized)
+            """
+            # generate pixel coord
+            if pix_coord is None:
+                sample_x = jt.rand(cnt, dtype=jt.float32) * W * center_crop
+                sample_y = jt.rand(cnt, dtype=jt.float32) * H * center_crop
+                sample_x += ((1 - center_crop) / 2.) * W
+                sample_y += ((1 - center_crop) / 2.) * H  # [N, ]
+                pix_coord = jt.stack([sample_x, sample_y], dim=-1)
+            else:
+                sample_x = pix_coord[..., 0]
+                sample_y = pix_coord[..., 1]
+
+            dirs = jt.stack([(sample_x-W*.5)/focal, -(sample_y-H*.5)/focal, -jt.ones_like(sample_x)], -1)  # [N, 3]
+            # Rotate ray directions from camera frame to the world frame
+            rays_d = jt.matmul(dirs, jt.transpose(c2w[:3, :3], (1, 0)))
+            # Translate camera frame's origin to the world frame. It is the origin of all rays.
+            rays_o = c2w[:3, -1].unsqueeze(0).repeat((dirs.shape[0], 1))  # [N, 3]
+            return rays_o, rays_d, pix_coord
+        def sample_info_gain_rays(img_h, img_w, focal, rgb_pose, N_rand, coord, sampling_method, loaded_ray):
+            if sampling_method == 'near_pose':
+                rgb_near_pose = loaded_ray.get_near_c2w(rgb_pose)
+                rays_o_near, rays_d_near, _ = random_sample_ray(
+                    img_h, img_w, focal, rgb_near_pose, N_rand, pix_coord=coord)
+            else:
+                rays_o_near, rays_d_near, _ = ru.sample_nearby_ray(
+                    img_h, img_w, focal, rgb_pose, coord, loaded_ray['info_loss_pixel_range'])
+            loaded_ray.update({'rays_o_near': rays_o_near, 'rays_d_near': rays_d_near})
+        def sample_target_rgb(coord, target, loaded_ray):
+            coord = ru.normalize_pts(coord, self.img_h, self.img_w)  # normalize to [-1, 1] for sampling
+            coord = coord.unsqueeze(0).unsqueeze(0)  # [1, 1, N_rand, 2]
+            target_rgb = nn.grid_sampler_2d(target, coord, 'bilinear', 'zeros', False)  # [1, 3, 1, N_rand]
+            target_rgb = target_rgb.squeeze(0).squeeze(-2)
+            target_rgb = target_rgb.permute(1, 0)  # [N_rand, 3]
+            loaded_ray.update({'target_rgb': target_rgb})
+        def sample_unseen_rays(img_h, img_w, focal, rgb_pose_e, n_entropy, center_crop, loaded_ray):
+            img_e = np.random.choice(self.loaded_data['imgs'].shape[0])
+            rgb_pose_e = self.loaded_data['poses'][img_e]  # [4, 4]
+            rays_o_ent, rays_d_ent, coord_ent = random_sample_ray(
+                img_h, img_w, focal, rgb_pose_e, n_entropy, center_crop=center_crop)
+            loaded_ray.update({'rays_o_ent': rays_o_ent, 'rays_d_ent': rays_d_ent})
+        def sample_unseen_info_gain_rays(img_h, img_w, focal, rgb_pose_e, n_entropy, coord_ent, sampling_method, loaded_ray):
+            if sampling_method == 'near_pose':
+                ent_near_pose = loaded_ray.get_near_c2w(rgb_pose_e)
+                rays_o_ent_near, rays_d_ent_near, _ = random_sample_ray(
+                    img_h, img_w, focal, ent_near_pose, n_entropy, pix_coord=coord_ent)
+            else:
+                rays_o_ent_near, rays_d_ent_near, _ = ru.sample_nearby_ray(
+                    img_h, img_w, focal, rgb_pose_e, coord_ent, loaded_ray['info_loss_pixel_range'])
+            loaded_ray.update({'rays_o_ent_near': rays_o_ent_near, 'rays_d_ent_near': rays_d_ent_near})
+        
         sample_info_gain = self.cfg['info_loss']['use']
         sample_entropy = self.cfg['entropy_loss']['use']
         loaded_ray = {}
@@ -69,61 +147,25 @@ class Infonerf:
         cfg_train = self.cfg['training']
         _crop = cfg_train['precrop_frac'] if self.it_time < cfg_train['precrop_iters'] else 1.0
         # sample rays in target view, ([N_rand, 3], [N_rand, 3], [N_rand, 2])
-        rays_o, rays_d, coord = ru.random_sample_ray(
+        rays_o, rays_d, coord = random_sample_ray(
             self.img_h, self.img_w, self.focal, rgb_pose, 
             self.cfg['training']['N_rand'], center_crop=_crop)
         
         loaded_ray.update({'coord': coord, 'rays_o': rays_o, 'rays_d': rays_d})
-
-        # sample rays for information gain reduction loss
         if sample_info_gain:
-            if self.cfg['info_loss']['sampling_method'] == 'near_pose':
-                rgb_near_pose = self.get_near_c2w(rgb_pose)
-                # sample rays in a nearby view for info gain loss, 
-                # ([N_rand, 3], [N_rand, 3], [N_rand, 2])
-                rays_o_near, rays_d_near, _ = ru.random_sample_ray(
-                    self.img_h, self.img_w, self.focal, rgb_near_pose, 
-                    self.cfg['training']['N_rand'], pix_coord=coord)
-            else:
-                rays_o_near, rays_d_near, _ = ru.sample_nearby_ray(
-                    self.img_h, self.img_w, self.focal, rgb_pose, 
-                    coord, self.cfg['info_loss']['pixel_range'])
-            loaded_ray.update({'rays_o_near': rays_o_near, 'rays_d_near': rays_d_near})
-
-        # sample ground truth RGB
-        coord = ru.normalize_pts(coord, self.img_h, self.img_w)  # normalize to [-1, 1] for sampling
-        coord = coord.unsqueeze(0).unsqueeze(0)  # [1, 1, N_rand, 2]
-        target_rgb = nn.grid_sampler_2d(target, coord, 'bilinear', 'zeros', False)  # [1, 3, 1, N_rand]
-        target_rgb = target_rgb.squeeze(0).squeeze(-2)
-        target_rgb = target_rgb.permute(1, 0)  # [N_rand, 3]
-        loaded_ray.update({'target_rgb': target_rgb})
-
-        # Sampling for unseen rays
+            sample_info_gain_rays(self.img_h, self.img_w, self.focal, loaded_ray['rgb_pose'], 
+                                self.cfg['training']['N_rand'], loaded_ray['coord'], 
+                                self.cfg['info_loss']['sampling_method'], loaded_ray)
+        sample_target_rgb(coord, target, loaded_ray)
         if sample_entropy:
             n_entropy = self.cfg['entropy_loss']['N_entropy']
-            # randomly choose from all images
-            img_e = np.random.choice(self.loaded_data['imgs'].shape[0])
-            rgb_pose_e = self.loaded_data['poses'][img_e]  # [4, 4]
-            rays_o_ent, rays_d_ent, coord_ent = ru.random_sample_ray(
-                self.img_h, self.img_w, self.focal, rgb_pose_e, 
-                n_entropy, center_crop=_crop)
-            loaded_ray.update({'rays_o_ent': rays_o_ent, 'rays_d_ent': rays_d_ent})
-
-            # sample rays for information gain reduction loss (for unseen rays)
-            if sample_info_gain:
-                if self.cfg['info_loss']['sampling_method'] == 'near_pose':
-                    ent_near_pose = self.get_near_c2w(rgb_pose_e)
-                    # sample rays in a nearby view for info gain loss, 
-                    # ([N_rand, 3], [N_rand, 3], [N_rand, 2])
-                    rays_o_ent_near, rays_d_ent_near, _ = ru.random_sample_ray(
-                        self.img_h, self.img_w, self.focal, ent_near_pose, 
-                        n_entropy, pix_coord=coord_ent)
-                else:
-                    rays_o_ent_near, rays_d_ent_near, _ = ru.sample_nearby_ray(
-                        self.img_h, self.img_w, self.focal, rgb_pose_e, 
-                        coord_ent, self.cfg['info_loss']['pixel_range'])
-                loaded_ray.update({'rays_o_ent_near': rays_o_ent_near, 'rays_d_ent_near': rays_d_ent_near})
-        
+            sample_unseen_rays(self.img_h, self.img_w, self.focal, self.loaded_data['poses'], 
+                                n_entropy, _crop, loaded_ray)
+        if sample_info_gain:
+            sample_unseen_info_gain_rays(self.img_h, self.img_w, self.focal, 
+                                        loaded_ray['rgb_pose_e'], n_entropy, 
+                                        loaded_ray['coord_ent'], 
+                                        self.cfg['info_loss']['sampling_method'], loaded_ray)
         return loaded_ray
     def render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
         """Volumetric rendering for rays
@@ -358,3 +400,29 @@ class Infonerf:
                 psnr_avg = ls.img2psnr_redefine(predict, ref)
                 metric['psnr'] = psnr_avg.item()
         print("Test: ", metric)
+
+    # #TODO, only 1 test function
+    # def test(self, poses, ref=None, test_psnr=False, test_ssim=False, test_lpips=False, save_dir=None, downsample=2):
+    #     if poses.ndim == 2:
+    #         poses = poses.unsqueeze(0)
+    #     predict = self.render_image(poses, downsample, save_dir=save_dir)
+    #     ref = nn.resize(ref, size=(self.img_h // (2 ** downsample), self.img_w // (2 ** downsample)), mode='bilinear')
+    #     with jt.no_grad():
+    #         metric = {}
+    #         predict = jt.stack(predict, dim=0)  # [B, 3, H, W]
+    #         if ref is not None:
+    #             psnr_avg = ls.img2psnr_redefine(predict, ref)
+    #             metric['psnr'] = psnr_avg.item()
+    #         return metric
+
+    # def run_testset(self, save_path, skip, downsample=2, no_metric=False):
+    #     self.model.eval()
+    #     if self.model_fine is not None:
+    #         self.model_fine.eval()
+    #     os.makedirs(save_path, exist_ok=True)
+    #     test_id = self.loaded_data['i_split'][2][::skip]
+    #     test_pose = self.loaded_data['poses'][test_id]
+    #     ref_images = self.loaded_data['imgs'][test_id]
+    #     #this should not be an individual function
+    #     metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, downsample)
+    #     print("Test: ", metric)
