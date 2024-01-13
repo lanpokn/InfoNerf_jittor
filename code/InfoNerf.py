@@ -1,5 +1,8 @@
 #rewrite here
-#reference:https://github.com/itoshiko/InfoNeRF-jittor,and code in original paper
+#reference:
+#code in original paper
+#https://github.com/itoshiko/InfoNeRF-jittor, which is translated from pytorch to jittor
+#I mainly upgrade from https://github.com/itoshiko/InfoNeRF-jitto, details in readme
 
 # In neural networks, the concept of a "fine network" is often associated with refining or enhancing the results obtained from a primary or "coarse network." Here are some common scenarios where fine networks are used:
 
@@ -16,9 +19,68 @@ import sys
 
 from config import *
 from nerf_base import *
-from utils import *
-from load_blender import *
 import loss as ls
+class GetNearC2W:
+    def __init__(self, args):
+        super(GetNearC2W, self).__init__()
+        self.near_c2w_type = args['near_c2w_type']
+        self.near_c2w_rot = args['near_c2w_rot']
+        self.near_c2w_trans = args['near_c2w_trans']
+    
+    def __call__(self, c2w, all_poses=None, j=None):
+        if self.near_c2w_type == 'rot_from_origin':
+            return self.rot_from_origin(c2w)
+        elif self.near_c2w_type == 'near':
+            return self.near(c2w, all_poses)
+        elif self.near_c2w_type == 'random_pos':
+            return self.random_pos(c2w)
+        elif self.near_c2w_type == 'random_dir':
+            return self.random_dir(c2w, j)
+   
+    def random_pos(self, c2w):
+        c2w[:3, -1] += self.near_c2w_trans * jt.randn(3)
+        return c2w 
+    
+    def random_dir(self, c2w, j):
+        rot_mat = self.get_rotation_matrix(j)
+        rot = rot_mat @ c2w[:3,:3]  # [3, 3]
+        c2w[:3, :3] = rot
+        return c2w
+    
+    def rot_from_origin(self, c2w):
+        rot = c2w[:3, :3]  # [3, 3]
+        pos = c2w[:3, -1:]  # [3, 1]
+        rot_mat = self.get_rotation_matrix()
+        pos = rot_mat @ pos
+        rot = rot_mat @ rot
+        new_c2w = jt.zeros((4, 4), dtype=jt.float32)
+        new_c2w[:3, :3] = rot
+        new_c2w[:3, -1:] = pos
+        new_c2w[3, 3] = 1
+        return new_c2w
+
+    def get_rotation_matrix(self):
+        rotation = self.near_c2w_rot
+
+        phi = (rotation*(np.pi / 180.))
+        x = np.random.uniform(-phi, phi)
+        y = np.random.uniform(-phi, phi)
+        z = np.random.uniform(-phi, phi)
+        
+        rot_x = np.array([
+            [1,0,0],
+            [0,np.cos(x),-np.sin(x)],
+            [0,np.sin(x), np.cos(x)]])
+        rot_y = np.array([
+            [np.cos(y),0,-np.sin(y)],
+            [0,1,0],
+            [np.sin(y),0, np.cos(y)]])
+        rot_z = np.array([
+            [np.cos(z),-np.sin(z),0],
+            [np.sin(z),np.cos(z),0],
+            [0,0,1]])
+        _rot = rot_x @ (rot_y @ rot_z)
+        return jt.array(_rot)
 class Infonerf:
     def __init__(self, cfg_path, base_path,ckptpath) -> None:
         #load a specific model

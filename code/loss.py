@@ -96,3 +96,22 @@ class EntropyLoss:
             return -1 * prob * jt.log2(prob+1e-10)
         elif self.type_ == '1-p':
             return prob * jt.log2(1-prob)
+# in testing I found that this loss is useless, even harmless\
+# so it's no need to implement it
+# class SmoothingLoss:
+#     def __init__(self, args):
+#         super(SmoothingLoss, self).__init__()
+#         self.smoothing_activation = args['activation']
+#         self.criterion = nn.KLDivLoss(reduction='batchmean')
+    
+#     def __call__(self, sigma_1, sigma_2):
+#         if self.smoothing_activation == 'softmax':
+#             p = nn.softmax(sigma_1, -1)
+#             q = nn.softmax(sigma_2, -1)
+#         elif self.smoothing_activation == 'norm':
+#             p = sigma_1 / (jt.sum(sigma_1, -1, keepdims=True) + 1e-10) + 1e-10
+#             q = sigma_2 / (jt.sum(sigma_2, -1, keepdims=True) + 1e-10) + 1e-10
+#         loss = self.criterion(p.log(), q)
+#         # pointwise =  q * (q.log() - p.log())
+#         # return jt.sum(pointwise) / pointwise.shape[0]
+#         return loss
