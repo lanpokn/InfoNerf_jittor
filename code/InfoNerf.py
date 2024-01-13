@@ -1,5 +1,5 @@
 #rewrite here
-#reference:https://github.com/itoshiko/InfoNeRF-jittor
+#reference:https://github.com/itoshiko/InfoNeRF-jittor,and code in original paper
 
 # In neural networks, the concept of a "fine network" is often associated with refining or enhancing the results obtained from a primary or "coarse network." Here are some common scenarios where fine networks are used:
 
@@ -19,10 +19,29 @@ from nerf_base import *
 from utils import *
 from load_blender import *
 import loss as ls
-##nerf comes from others code, not changed
-        
 class Infonerf:
     def __init__(self, cfg_path, base_path,ckptpath) -> None:
+        #load a specific model
+        def load_ckpt():
+            def generate_fine_model_name(model_name):
+                base_name, extension = model_name.rsplit('.', 1)
+                
+                # Find the index of "model" in the base name
+                model_index = base_name.find("model")
+                
+                # Check if "model" is found and insert "_fine" after it
+                if model_index != -1:
+                    fine_model_name = f"{base_name[:model_index + 5]}_fine{base_name[model_index + 5:]}.{extension}"
+                    return fine_model_name
+                else:
+                    # If "model" is not found, return the original name
+                    return model_name
+            if self.cfg['training']['ckpt'] != "":
+                model_name = self.cfg['training']['ckpt']
+                self.model.load(model_name)
+                if self.model_fine is not None:
+                    model_fine_name = generate_fine_model_name(model_name)
+                    self.model_fine.load(model_fine_name)
         self.cfg = set_config(cfg_path, base_path,ckptpath)
         data_cfg = self.cfg['dataset']
         train_cfg = self.cfg['training']
@@ -33,40 +52,20 @@ class Infonerf:
         self.model, self.model_fine, self.embed_fn, self.embeddirs_fn = create_nerf(self.cfg)
         self.get_near_c2w = GetNearC2W(self.cfg['info_loss'])
         self.loss_fn = {}
-        self.init_loss()
+        self.__init_loss()
         op_param = list(self.model.parameters()) + (list(self.model_fine.parameters()) if self.model_fine is not None else [])
         self.optimizer = jt.optim.Adam(params=op_param, lr=self.cfg['training']['lr'], betas=(0.9, 0.999))
         self.it_time = 0
-        self.load_ckpt()
-    #load a specific model
-    def load_ckpt(self):
-        def generate_fine_model_name(model_name):
-            base_name, extension = model_name.rsplit('.', 1)
-            
-            # Find the index of "model" in the base name
-            model_index = base_name.find("model")
-            
-            # Check if "model" is found and insert "_fine" after it
-            if model_index != -1:
-                fine_model_name = f"{base_name[:model_index + 5]}_fine{base_name[model_index + 5:]}.{extension}"
-                return fine_model_name
-            else:
-                # If "model" is not found, return the original name
-                return model_name
-        if self.cfg['training']['ckpt'] != "":
-            model_name = self.cfg['training']['ckpt']
-            self.model.load(model_name)
-            if self.model_fine is not None:
-                model_fine_name = generate_fine_model_name(model_name)
-                self.model_fine.load(model_fine_name)
-    def init_loss(self):
+        load_ckpt()
+    
+    def __init_loss(self):
         if self.cfg['entropy_loss']['use']:
             self.loss_fn['ent'] = ls.EntropyLoss(self.cfg['entropy_loss'])
         if self.cfg['info_loss']['use']:
             self.loss_fn['kl_smooth'] = ls.SmoothingLoss(self.cfg['info_loss'])
             self.info_lambda = self.cfg['info_loss']['info_lambda']
         self.loss_fn['img_loss'] = nn.MSELoss()
-    def render_image(self, poses, dsample_ratio=0, save_dir=None):
+    def __render_image(self, poses, dsample_ratio=0, save_dir=None):
         def get_rays(H, W, focal, c2w, padding=None):
             """get rays in world coordinate of full image
             Args:
@@ -122,7 +121,7 @@ class Infonerf:
                     start = gi * group_size
                     end = (gi + 1) * group_size
                     end = (end if (end <= total_rays) else total_rays)
-                    render_out = self.render_rays(
+                    render_out = self.__render_rays(
                         rays_o[start:end], rays_d[start:end], self.cfg['rendering']['N_samples'], 
                         self.cfg['rendering']['N_importance'], True)
                     render_result = render_out['fine'] if 'fine' in render_out else render_out['coarse']
@@ -135,9 +134,8 @@ class Infonerf:
                     _img = np.clip(predict, 0., 1.)
                     _img = (_img * 255).astype(np.uint8)
                     cv.imwrite(f"{save_dir}/test_{vid}.png", _img)
-            return render
-    
-    def gen_train_data(self):
+            return render    
+    def __gen_train_data(self):
         def sample_nearby_ray(H, W, focal, c2w, pix_coord, distance):
             new_x, new_y = pix_coord[..., 0], pix_coord[..., 1]
             pts_shape = pix_coord.shape[:-1]
@@ -259,83 +257,7 @@ class Infonerf:
                                         loaded_ray['coord_ent'], 
                                         self.cfg['info_loss']['sampling_method'], loaded_ray)
         return loaded_ray
-    # def render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
-    #     """
-    #     Volumetric rendering for rays.
-
-    #     Args:
-    #         rays_o (Tensor): Ray origins, shape [N_rays, 3].
-    #         rays_d (Tensor): Ray directions, shape [N_rays, 3].
-    #         N_samples (int): Number of samples for coarse rendering.
-    #         N_importance (int): Number of importance samples for fine rendering.
-    #         eval (bool): Whether in evaluation mode.
-
-    #     Returns:
-    #         dict: Rendered results containing 'coarse' and 'fine' (if N_importance > 0).
-    #     """
-    #     result = {}
-
-    #     # Calculate sample points along rays
-    #     near, far = self.cfg['rendering']['near'], self.cfg['rendering']['far']
-    #     pts, z_vals = ru.generate_pts(
-    #         rays_o, rays_d, near, far, N_samples, 
-    #         perturb=((not eval) and (self.cfg['rendering']['perturb'])))
-
-    #     # Handle view directions if enabled
-    #     if self.cfg['rendering']['use_viewdirs']:
-    #         view_dirs = rays_d / jt.norm(rays_d, dim=-1, keepdims=True)
-    #         view_dirs = view_dirs.unsqueeze(1)
-    #         view_dirs = jt.repeat(view_dirs, (1, N_samples, 1))  # [N_rays, N_samples, 3]
-    #     else:
-    #         view_dirs = None
-
-    #     # Run coarse rendering network
-    #     raw_out = run_network(
-    #         pts, view_dirs, self.model, self.embed_fn, self.embeddirs_fn, 
-    #         self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
-
-    #     # Decode and store results for coarse rendering
-    #     decoded_out = ru.raw2outputs(
-    #         raw_out, z_vals, rays_d, 
-    #         self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
-    #         self.cfg['dataset']['white_bkgd'],
-    #         out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
-        
-    #     result.update({'coarse': decoded_out})
-
-    #     # Run fine rendering network if N_importance > 0
-    #     if N_importance > 0:
-    #         weights = decoded_out['weights']
-    #         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-    #         z_samples = ru.sample_pdf(
-    #             z_vals_mid, weights[...,1:-1], N_importance, 
-    #             det=((not eval) and (self.cfg['rendering']['perturb'])))
-    #         z_samples = z_samples.stop_grad()
-    #         _, z_vals_re = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
-            
-    #         # Calculate sample points for fine rendering
-    #         pts_re = rays_o[..., None, :] + rays_d[..., None, :] * z_vals_re[..., :, None]
-    #         if view_dirs is not None:
-    #             view_dirs_re = jt.repeat(view_dirs[:, :1, :], (1, N_samples + N_importance, 1))
-
-    #         # Run fine rendering network
-    #         raw_re = run_network(
-    #             pts_re, view_dirs_re, 
-    #             self.model_fine if self.model_fine is not None else self.model, 
-    #             self.embed_fn, self.embeddirs_fn, 
-    #             self.cfg['training']['netchunk'] if not eval else self.cfg['training']['evalchunk'])
-            
-    #         # Decode and store results for fine rendering
-    #         decoded_out_re = ru.raw2outputs(
-    #             raw_re, z_vals_re, rays_d, 
-    #             self.cfg['rendering']['raw_noise_std'] if not eval else 0., 
-    #             self.cfg['dataset']['white_bkgd'],
-    #             out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
-            
-    #         result.update({'fine': decoded_out_re})
-
-    #     return result
-    def render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
+    def __render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
 
         def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0., white_bkgd=False,
                     out_alpha=False, out_sigma=False, out_dist=False, debug_save=False):
@@ -516,14 +438,15 @@ class Infonerf:
 
         return result
        
+    ## above are entrance function
     def train(self):
         # Initialize training parameters
-        def collect_rays(train_data, N_rays, N_entropy):
+        def collect_rays(train_data):
             # Collect ray origins and directions for rendering
-            all_rays_o = concatenate_rays(train_data, ['rays_o', 'rays_o_near', 'rays_o_ent', 'rays_o_ent_near'], N_rays)
-            all_rays_d = concatenate_rays(train_data, ['rays_d', 'rays_d_near', 'rays_d_ent', 'rays_d_ent_near'], N_rays)
+            all_rays_o = concatenate_rays(train_data, ['rays_o', 'rays_o_near', 'rays_o_ent', 'rays_o_ent_near'])
+            all_rays_d = concatenate_rays(train_data, ['rays_d', 'rays_d_near', 'rays_d_ent', 'rays_d_ent_near'])
             return all_rays_o, all_rays_d
-        def concatenate_rays(train_data, entries, N_rays):
+        def concatenate_rays(train_data, entries):
             # Concatenate ray origins or directions based on the specified entries
             rays_list = [train_data[_entry] for _entry in entries if _entry in train_data]
             concatenated_rays = jt.concat(rays_list, dim=0)
@@ -610,10 +533,10 @@ class Infonerf:
             sys.stdout.flush()
             self.it_time = it
             # Generate training data
-            train_data = self.gen_train_data()
-            all_rays_o, all_rays_d =collect_rays(train_data, N_rays, N_entropy)
+            train_data = self.__gen_train_data()
+            all_rays_o, all_rays_d =collect_rays(train_data)
             # Render rays and calculate losses
-            render_out = self.render_rays(all_rays_o, all_rays_d, N_sample, N_refine)
+            render_out = self.__render_rays(all_rays_o, all_rays_d, N_sample, N_refine)
             total_loss, loss_dict =calculate_losses(render_out, train_data, N_rays, N_entropy, it)
             # Perform optimization step
             self.optimizer.step(total_loss)
@@ -637,7 +560,7 @@ class Infonerf:
         # metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, dsample_ratio)
         if test_pose.ndim == 2:
             test_pose = test_pose.unsqueeze(0)
-        predict = self.render_image(test_pose, dsample_ratio, save_dir=save_path)
+        predict = self.__render_image(test_pose, dsample_ratio, save_dir=save_path)
         ref = nn.resize(ref_images, size=(self.img_h // (2 ** dsample_ratio), self.img_w // (2 ** dsample_ratio)), mode='bilinear')
         with jt.no_grad():
             metric = {}

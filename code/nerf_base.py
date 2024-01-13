@@ -89,6 +89,7 @@ def create_nerf(cfg):
 
     return model, model_fine, embed_fn, embeddirs_fn
 
+# delete an outside loop 
 def run_network(inputs, viewdirs, model, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Run NeRF model (embedding + MLP)
     
