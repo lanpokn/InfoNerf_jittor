@@ -37,81 +37,48 @@ class EntropyLoss:
         
         if self.N_entropy == 0:
             self.computing_entropy_all = True
-    
-    def ray(self, density, acc):
-        density = nn.relu(density[..., -1])
-        sigma = 1 - jt.exp(-density)
-        ray_prob = sigma / (jt.sum(sigma, -1).unsqueeze(-1) + 1e-10)
-        entropy_ray = jt.sum(self.entropy(ray_prob), -1)
-        
-        # masking no hitting poisition?
-        mask = (acc>self.threshold).detach()
-        entropy_ray*= mask
-        entropy_ray_loss = jt.mean(entropy_ray, -1)
-        if self.entropy_log_scaling:
-            return jt.log(entropy_ray_loss + 1e-10)
-        return entropy_ray_loss
-
+    ##entrance
     def ray_zvals(self, sigma, acc):
-        ray_prob = sigma / (jt.sum(sigma,-1).unsqueeze(-1) + 1e-10)
-        entropy_ray = self.entropy(ray_prob)
-        entropy_ray_loss = jt.sum(entropy_ray, -1)
-        
-        # masking no hitting poisition?
-        mask = (acc > self.threshold).stop_grad()
-        entropy_ray_loss*= mask
-        if self.entropy_log_scaling:
-            return jt.log(jt.mean(entropy_ray_loss) + 1e-10)
-        return jt.mean(entropy_ray_loss)
-    
-    def ray_zvals_ver1_sigma(self, sigma, dists, acc):
-        ray_prob = sigma / (jt.sum(sigma* dists,-1).unsqueeze(-1)+1e-10)
-        entropy_ray = self.entropy(ray_prob)
-        
-        #intergral
-        entropy_ray = entropy_ray * dists
-        entropy_ray_loss = jt.sum(entropy_ray, -1)
-        
-        # masking no hitting poisition?
-        mask = (acc>self.threshold).detach()
-        entropy_ray_loss*= mask
-        if self.entropy_log_scaling:
-            return jt.log(jt.mean(entropy_ray_loss) + 1e-10)
-        return jt.mean(entropy_ray_loss)
+        """
+        Compute entropy loss for rays based on sigma values.
+        same with the paper
+        Args:
+            sigma (jt.Var): Sigma values.
+            acc (jt.Var): Accumulated values.
 
-    def ray_zvals_ver2_alpha(self, alpha, dists, acc):
-        ray_prob = alpha / (jt.sum(alpha,-1).unsqueeze(-1)+1e-10)
-        
-        entropy_ray = -1 * ray_prob * jt.log2(ray_prob/(dists+1e-10)+1e-10)
+        Returns:
+            jt.Var: Entropy loss for rays.
+        """
+        # Compute probability distribution from sigma values
+        ray_prob = sigma / (jt.sum(sigma, -1).unsqueeze(-1) + 1e-10)
+
+        # Compute entropy for the probability distribution
+        entropy_ray = self.entropy(ray_prob)
+
+        # Sum entropy along the last dimension
         entropy_ray_loss = jt.sum(entropy_ray, -1)
-        # masking no hitting poisition?
-        mask = (acc>self.threshold).detach()
+
+        # Create a mask based on the accumulation values and detach it to prevent gradient flow
+        mask = (acc > self.threshold).stop_grad()
+
+        # Apply the mask to the entropy values
         entropy_ray_loss *= mask
+
+        # Apply log scaling if specified, then compute the mean of the entropy loss
         if self.entropy_log_scaling:
             return jt.log(jt.mean(entropy_ray_loss) + 1e-10)
         return jt.mean(entropy_ray_loss)
-    
     def entropy(self, prob):
+        """
+        Compute entropy based on probability values.
+
+        Args:
+            prob (jt.Var): Probability values.
+
+        Returns:
+            jt.Var: Entropy values.
+        """
         if self.type_ == 'log2':
-            return -1 * prob * jt.log2(prob+1e-10)
+            return -1 * prob * jt.log2(prob + 1e-10)
         elif self.type_ == '1-p':
-            return prob * jt.log2(1-prob)
-# in testing I found that this loss is useless, even harmless\
-# so it's no need to implement it
-# class SmoothingLoss:
-#     def __init__(self, args):
-#         super(SmoothingLoss, self).__init__()
-#         self.smoothing_activation = args['activation']
-#         self.criterion = nn.KLDivLoss(reduction='batchmean')
-    
-#     def __call__(self, sigma_1, sigma_2):
-#         if self.smoothing_activation == 'softmax':
-#             p = nn.softmax(sigma_1, -1)
-#             q = nn.softmax(sigma_2, -1)
-#         elif self.smoothing_activation == 'norm':
-#             p = sigma_1 / (jt.sum(sigma_1, -1, keepdims=True) + 1e-10) + 1e-10
-#             q = sigma_2 / (jt.sum(sigma_2, -1, keepdims=True) + 1e-10) + 1e-10
-#         loss = self.criterion(p.log(), q)
-#         # pointwise =  q * (q.log() - p.log())
-#         # return jt.sum(pointwise) / pointwise.shape[0]
-#         return loss
+            return prob * jt.log2(1 - prob)

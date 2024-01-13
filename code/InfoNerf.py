@@ -22,12 +22,29 @@ from nerf_base import *
 import loss as ls
 class GetNearC2W:
     def __init__(self, args):
+        """
+        Initialize the GetNearC2W class.
+
+        Args:
+            args (dict): Dictionary containing configuration options.
+        """
         super(GetNearC2W, self).__init__()
         self.near_c2w_type = args['near_c2w_type']
         self.near_c2w_rot = args['near_c2w_rot']
         self.near_c2w_trans = args['near_c2w_trans']
     
     def __call__(self, c2w, all_poses=None, j=None):
+        """
+        Call method to apply the specified near C2W transformation.
+
+        Args:
+            c2w (jt.Var): Camera-to-world matrix.
+            all_poses (jt.Var, optional): All camera poses.
+            j (int, optional): Index for random_dir transformation.
+
+        Returns:
+            jt.Var: Transformed camera-to-world matrix.
+        """
         if self.near_c2w_type == 'rot_from_origin':
             return self.rot_from_origin(c2w)
         elif self.near_c2w_type == 'near':
@@ -38,16 +55,44 @@ class GetNearC2W:
             return self.random_dir(c2w, j)
    
     def random_pos(self, c2w):
+        """
+        Apply random position transformation to the camera-to-world matrix.
+
+        Args:
+            c2w (jt.Var): Camera-to-world matrix.
+
+        Returns:
+            jt.Var: Transformed camera-to-world matrix.
+        """
         c2w[:3, -1] += self.near_c2w_trans * jt.randn(3)
         return c2w 
     
     def random_dir(self, c2w, j):
+        """
+        Apply random direction transformation to the camera-to-world matrix.
+
+        Args:
+            c2w (jt.Var): Camera-to-world matrix.
+            j (int): Index for random_dir transformation.
+
+        Returns:
+            jt.Var: Transformed camera-to-world matrix.
+        """
         rot_mat = self.get_rotation_matrix(j)
         rot = rot_mat @ c2w[:3,:3]  # [3, 3]
         c2w[:3, :3] = rot
         return c2w
     
     def rot_from_origin(self, c2w):
+        """
+        Apply rotation from the origin transformation to the camera-to-world matrix.
+
+        Args:
+            c2w (jt.Var): Camera-to-world matrix.
+
+        Returns:
+            jt.Var: Transformed camera-to-world matrix.
+        """
         rot = c2w[:3, :3]  # [3, 3]
         pos = c2w[:3, -1:]  # [3, 1]
         rot_mat = self.get_rotation_matrix()
@@ -59,26 +104,35 @@ class GetNearC2W:
         new_c2w[3, 3] = 1
         return new_c2w
 
-    def get_rotation_matrix(self):
+    def get_rotation_matrix(self, j=None):
+        """
+        Generate a random rotation matrix.
+
+        Args:
+            j (int, optional): Index for random_dir transformation.
+
+        Returns:
+            jt.Var: Random rotation matrix.
+        """
         rotation = self.near_c2w_rot
 
-        phi = (rotation*(np.pi / 180.))
+        phi = (rotation * (np.pi / 180.))
         x = np.random.uniform(-phi, phi)
         y = np.random.uniform(-phi, phi)
         z = np.random.uniform(-phi, phi)
         
         rot_x = np.array([
-            [1,0,0],
-            [0,np.cos(x),-np.sin(x)],
-            [0,np.sin(x), np.cos(x)]])
+            [1, 0, 0],
+            [0, np.cos(x), -np.sin(x)],
+            [0, np.sin(x), np.cos(x)]])
         rot_y = np.array([
-            [np.cos(y),0,-np.sin(y)],
-            [0,1,0],
-            [np.sin(y),0, np.cos(y)]])
+            [np.cos(y), 0, -np.sin(y)],
+            [0, 1, 0],
+            [np.sin(y), 0, np.cos(y)]])
         rot_z = np.array([
-            [np.cos(z),-np.sin(z),0],
-            [np.sin(z),np.cos(z),0],
-            [0,0,1]])
+            [np.cos(z), -np.sin(z), 0],
+            [np.sin(z), np.cos(z), 0],
+            [0, 0, 1]])
         _rot = rot_x @ (rot_y @ rot_z)
         return jt.array(_rot)
 class Infonerf:
@@ -156,47 +210,74 @@ class Infonerf:
             rays_o = c2w[:3, -1].repeat((H, W, 1))  # [H, W, 3]
             return rays_o, rays_d
         with jt.no_grad():
+            # Get the number of views in the input poses
             n_views = poses.shape[0]
             render = []
+
+            # Calculate the rendered image dimensions based on dsample_ratio
             if dsample_ratio != 0:
                 render_h = self.img_h // (2 ** dsample_ratio)
                 render_w = self.img_w // (2 ** dsample_ratio)
             else:
                 render_h, render_w = self.img_h, self.img_w
+
+            # Adjust focal length for rendering
             focal = self.focal * render_h / self.img_h
+
+            # Loop through each view in poses and render images
             for vid in tqdm(range(n_views)):
                 pose = poses[vid]
+
+                # Generate rays for rendering
                 rays_o, rays_d = get_rays(render_h, render_w, focal, pose)
                 rays_o = rays_o.reshape((render_h * render_w, -1))
                 rays_d = rays_d.reshape((render_h * render_w, -1))
 
+                # Define rendering parameters for chunk processing
                 total_rays = render_h * render_w
                 group_size = self.cfg['training']['chunk']
                 group_num = (
                     (total_rays // group_size) if (total_rays % group_size == 0) else (total_rays // group_size + 1))
+                
+                # Handle edge case where total_rays is less than group_size
                 if group_num == 0:
                     group_num = 1
                     group_size = total_rays
 
                 group_output = []
+
+                # Loop through each group for chunk processing
                 for gi in range(group_num):
                     start = gi * group_size
                     end = (gi + 1) * group_size
                     end = (end if (end <= total_rays) else total_rays)
+
+                    # Render rays for the current group
                     render_out = self.__render_rays(
                         rays_o[start:end], rays_d[start:end], self.cfg['rendering']['N_samples'], 
                         self.cfg['rendering']['N_importance'], True)
+                    
+                    # Extract rendered image from the output
                     render_result = render_out['fine'] if 'fine' in render_out else render_out['coarse']
                     group_output.append(render_result['rgb_map'])
+
+                # Concatenate outputs from different groups to obtain the complete rendered image
                 image_rgb = jt.concat(group_output, 0)
                 image_rgb = image_rgb.reshape((render_h, render_w, 3))
+                
+                # Append the rendered image to the render list
                 render.append(image_rgb.permute(2, 0, 1))  # [3, h, w]
+
+                # Save the rendered image if save_dir is provided
                 if save_dir is not None:
                     predict = image_rgb.detach().numpy()
                     _img = np.clip(predict, 0., 1.)
                     _img = (_img * 255).astype(np.uint8)
                     cv.imwrite(f"{save_dir}/test_{vid}.png", _img)
-            return render    
+
+        # Return the list of rendered images
+        return render
+
     def __gen_train_data(self):
         def sample_nearby_ray(H, W, focal, c2w, pix_coord, distance):
             new_x, new_y = pix_coord[..., 0], pix_coord[..., 1]
@@ -290,7 +371,7 @@ class Infonerf:
         sample_entropy = self.cfg['entropy_loss']['use']
         loaded_ray = {}
 
-        # Random from one image
+        # prepare data
         i_train = self.loaded_data['i_split'][0]
         img_i = np.random.choice(i_train)
         target = self.loaded_data['imgs'][img_i:img_i+1]  # [1, 3, H, W]
@@ -302,7 +383,7 @@ class Infonerf:
         rays_o, rays_d, coord = random_sample_ray(
             self.img_h, self.img_w, self.focal, rgb_pose, 
             self.cfg['training']['N_rand'], center_crop=_crop)
-        
+        #add data in loaded ray
         loaded_ray.update({'coord': coord, 'rays_o': rays_o, 'rays_d': rays_d})
         if sample_info_gain:
             sample_info_gain_rays(self.img_h, self.img_w, self.focal, loaded_ray['rgb_pose'], 
@@ -411,6 +492,18 @@ class Infonerf:
         def calculate_fine_sample_points(N_importance, weights, z_vals, eval, perturb):
             """Calculate sample points for fine rendering."""
             def sample_pdf(bins, weights, N_samples, det=False):
+                """
+                Sample from a probability density function (pdf) defined by bins and weights.
+                uniform on CDF to get an arbitary sampling!
+                Args:
+                    bins (jt.Var): Bins defining the pdf.
+                    weights (jt.Var): Weights corresponding to each bin.
+                    N_samples (int): Number of samples to generate.
+                    det (bool, optional): Flag for deterministic sampling. Default is False.
+
+                Returns:
+                    jt.Var: Generated samples from the pdf.
+                """
                 # Get pdf
                 weights = weights + 1e-5 # prevent nans
                 pdf = weights / jt.sum(weights, -1, keepdims=True)
@@ -431,8 +524,6 @@ class Infonerf:
                 above = jt.minimum((cdf.shape[-1]-1) * jt.ones_like(inds), inds)
                 inds_g = jt.stack([below, above], -1)  # (batch, N_samples, 2)
 
-                # cdf_g = tf.gather(cdf, inds_g, axis=-1, batch_dims=len(inds_g.shape)-2)
-                # bins_g = tf.gather(bins, inds_g, axis=-1, batch_dims=len(inds_g.shape)-2)
                 matched_shape = [inds_g.shape[0], inds_g.shape[1], cdf.shape[-1]]
                 cdf_g = jt.gather(cdf.unsqueeze(1).expand(matched_shape), 2, inds_g)
                 bins_g = jt.gather(bins.unsqueeze(1).expand(matched_shape), 2, inds_g)
@@ -552,7 +643,7 @@ class Infonerf:
                 elif near_remove_normal:
                     alpha_raw = alpha_raw[N_rays:]
                     acc_raw = acc_raw[N_rays:]
-
+                #here is core
                 entropy_ray_zvals_loss = self.loss_fn['ent'].ray_zvals(alpha_raw, acc_raw)
                 loss_dict['entropy_ray_zvals'] = entropy_ray_zvals_loss.item()
             loss_dict.update({"loss": total_loss.item()})
