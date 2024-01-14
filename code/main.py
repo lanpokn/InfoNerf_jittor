@@ -8,8 +8,7 @@ from tqdm import tqdm
 import cv2 as cv
 
 from InfoNerf import *
-##this should be rewrite TOTALLY
-#TODO
+
 def render_video(cfg_path,base_path,ckpt_path):
     network = Infonerf(cfg_path,base_path,ckpt_path)
     video_path = os.path.join(network.exp_path, 'video')
@@ -18,9 +17,7 @@ def render_video(cfg_path,base_path,ckpt_path):
     length = 600
     fps = 24
     size = (800, 800)
-    video = cv.VideoWriter(
-        os.path.join(video_path, "render.mp4"), 
-        cv.VideoWriter_fourcc('h', '2', '6', '4'), fps, size)
+    video = cv.VideoWriter(os.path.join(video_path, "render.mp4"), cv.VideoWriter_fourcc('h', '2', '6', '4'), fps, size)
     for i in range(600):
         i_temp = i%400
         img_index = i_temp if i_temp < 200 else 400 - i_temp

@@ -20,121 +20,6 @@ import sys
 from config import *
 from nerf_base import *
 import loss as ls
-class GetNearC2W:
-    def __init__(self, args):
-        """
-        Initialize the GetNearC2W class.
-
-        Args:
-            args (dict): Dictionary containing configuration options.
-        """
-        super(GetNearC2W, self).__init__()
-        self.near_c2w_type = args['near_c2w_type']
-        self.near_c2w_rot = args['near_c2w_rot']
-        self.near_c2w_trans = args['near_c2w_trans']
-    
-    def __call__(self, c2w, all_poses=None, j=None):
-        """
-        Call method to apply the specified near C2W transformation.
-
-        Args:
-            c2w (jt.Var): Camera-to-world matrix.
-            all_poses (jt.Var, optional): All camera poses.
-            j (int, optional): Index for random_dir transformation.
-
-        Returns:
-            jt.Var: Transformed camera-to-world matrix.
-        """
-        if self.near_c2w_type == 'rot_from_origin':
-            return self.rot_from_origin(c2w)
-        elif self.near_c2w_type == 'near':
-            return self.near(c2w, all_poses)
-        elif self.near_c2w_type == 'random_pos':
-            return self.random_pos(c2w)
-        elif self.near_c2w_type == 'random_dir':
-            return self.random_dir(c2w, j)
-   
-    def random_pos(self, c2w):
-        """
-        Apply random position transformation to the camera-to-world matrix.
-
-        Args:
-            c2w (jt.Var): Camera-to-world matrix.
-
-        Returns:
-            jt.Var: Transformed camera-to-world matrix.
-        """
-        c2w[:3, -1] += self.near_c2w_trans * jt.randn(3)
-        return c2w 
-    
-    def random_dir(self, c2w, j):
-        """
-        Apply random direction transformation to the camera-to-world matrix.
-
-        Args:
-            c2w (jt.Var): Camera-to-world matrix.
-            j (int): Index for random_dir transformation.
-
-        Returns:
-            jt.Var: Transformed camera-to-world matrix.
-        """
-        rot_mat = self.get_rotation_matrix(j)
-        rot = rot_mat @ c2w[:3,:3]  # [3, 3]
-        c2w[:3, :3] = rot
-        return c2w
-    
-    def rot_from_origin(self, c2w):
-        """
-        Apply rotation from the origin transformation to the camera-to-world matrix.
-
-        Args:
-            c2w (jt.Var): Camera-to-world matrix.
-
-        Returns:
-            jt.Var: Transformed camera-to-world matrix.
-        """
-        rot = c2w[:3, :3]  # [3, 3]
-        pos = c2w[:3, -1:]  # [3, 1]
-        rot_mat = self.get_rotation_matrix()
-        pos = rot_mat @ pos
-        rot = rot_mat @ rot
-        new_c2w = jt.zeros((4, 4), dtype=jt.float32)
-        new_c2w[:3, :3] = rot
-        new_c2w[:3, -1:] = pos
-        new_c2w[3, 3] = 1
-        return new_c2w
-
-    def get_rotation_matrix(self, j=None):
-        """
-        Generate a random rotation matrix.
-
-        Args:
-            j (int, optional): Index for random_dir transformation.
-
-        Returns:
-            jt.Var: Random rotation matrix.
-        """
-        rotation = self.near_c2w_rot
-
-        phi = (rotation * (np.pi / 180.))
-        x = np.random.uniform(-phi, phi)
-        y = np.random.uniform(-phi, phi)
-        z = np.random.uniform(-phi, phi)
-        
-        rot_x = np.array([
-            [1, 0, 0],
-            [0, np.cos(x), -np.sin(x)],
-            [0, np.sin(x), np.cos(x)]])
-        rot_y = np.array([
-            [np.cos(y), 0, -np.sin(y)],
-            [0, 1, 0],
-            [np.sin(y), 0, np.cos(y)]])
-        rot_z = np.array([
-            [np.cos(z), -np.sin(z), 0],
-            [np.sin(z), np.cos(z), 0],
-            [0, 0, 1]])
-        _rot = rot_x @ (rot_y @ rot_z)
-        return jt.array(_rot)
 class Infonerf:
     def __init__(self, cfg_path, base_path,ckptpath) -> None:
         #load a specific model
@@ -166,7 +51,6 @@ class Infonerf:
         self.img_h, self.img_w, self.focal = self.loaded_data['calib']
         self.exp_path = prepare_dir(self.cfg)
         self.model, self.model_fine, self.embed_fn, self.embeddirs_fn = create_nerf(self.cfg)
-        self.get_near_c2w = GetNearC2W(self.cfg['info_loss'])
         self.loss_fn = {}
         self.__init_loss()
         op_param = list(self.model.parameters()) + (list(self.model_fine.parameters()) if self.model_fine is not None else [])
@@ -179,9 +63,10 @@ class Infonerf:
             self.loss_fn['ent'] = ls.EntropyLoss(self.cfg['entropy_loss'])
         if self.cfg['info_loss']['use']:
             self.loss_fn['kl_smooth'] = ls.SmoothingLoss(self.cfg['info_loss'])
-            self.info_lambda = self.cfg['info_loss']['info_lambda']
         self.loss_fn['img_loss'] = nn.MSELoss()
-    def __render_image(self, poses, dsample_ratio=0, save_dir=None):
+    #final result is fine is fine_enabled
+    #fine 18.8 while eles is 16
+    def __gen_nerf_imgs(self, poses, dsample_ratio=0, save_dir=None):
         def get_rays(H, W, focal, c2w, padding=None):
             """get rays in world coordinate of full image
             Args:
@@ -212,7 +97,7 @@ class Infonerf:
         with jt.no_grad():
             # Get the number of views in the input poses
             n_views = poses.shape[0]
-            render = []
+            img_list = []
 
             # Calculate the rendered image dimensions based on dsample_ratio
             if dsample_ratio != 0:
@@ -253,7 +138,7 @@ class Infonerf:
                     end = (end if (end <= total_rays) else total_rays)
 
                     # Render rays for the current group
-                    render_out = self.__render_rays(
+                    render_out = self.__get_ray_output(
                         rays_o[start:end], rays_d[start:end], self.cfg['rendering']['N_samples'], 
                         self.cfg['rendering']['N_importance'], True)
                     
@@ -266,7 +151,7 @@ class Infonerf:
                 image_rgb = image_rgb.reshape((render_h, render_w, 3))
                 
                 # Append the rendered image to the render list
-                render.append(image_rgb.permute(2, 0, 1))  # [3, h, w]
+                img_list.append(image_rgb.permute(2, 0, 1))  # [3, h, w]
 
                 # Save the rendered image if save_dir is provided
                 if save_dir is not None:
@@ -276,26 +161,9 @@ class Infonerf:
                     cv.imwrite(f"{save_dir}/test_{vid}.png", _img)
 
         # Return the list of rendered images
-        return render
+        return img_list
 
     def __gen_train_data(self):
-        def sample_nearby_ray(H, W, focal, c2w, pix_coord, distance):
-            new_x, new_y = pix_coord[..., 0], pix_coord[..., 1]
-            pts_shape = pix_coord.shape[:-1]
-            offset = np.random.randint(1, distance * 2 + 1)
-            offset_x = jt.randint(0, offset + 1, pts_shape)
-            offset_y = offset - offset_x
-            
-            new_x += offset_x
-            new_y += offset_y
-            new_pix_coord = jt.stack([new_x, new_y], dim=-1)
-
-            dirs = jt.stack([(new_x-W*.5) / focal, -(new_y-H*.5) / focal, -jt.ones_like(new_x)], -1)  # [..., 3]
-            # Rotate ray directions from camera frame to the world frame
-            rays_d = jt.matmul(dirs, c2w[:3, :3])
-            # Translate camera frame's origin to the world frame. It is the origin of all rays.
-            rays_o = c2w[:3, -1].repeat(list(dirs.shape[:-1]) + [1, ])  # [..., 3]
-            return rays_o, rays_d, new_pix_coord
         def random_sample_ray(H, W, focal, c2w, cnt, pix_coord=None, center_crop=1.0):
             """Sample rays in target view
 
@@ -330,15 +198,6 @@ class Infonerf:
             # Translate camera frame's origin to the world frame. It is the origin of all rays.
             rays_o = c2w[:3, -1].unsqueeze(0).repeat((dirs.shape[0], 1))  # [N, 3]
             return rays_o, rays_d, pix_coord
-        def sample_info_gain_rays(img_h, img_w, focal, rgb_pose, N_rand, coord, sampling_method, loaded_ray):
-            if sampling_method == 'near_pose':
-                rgb_near_pose = loaded_ray.get_near_c2w(rgb_pose)
-                rays_o_near, rays_d_near, _ = random_sample_ray(
-                    img_h, img_w, focal, rgb_near_pose, N_rand, pix_coord=coord)
-            else:
-                rays_o_near, rays_d_near, _ = sample_nearby_ray(
-                    img_h, img_w, focal, rgb_pose, coord, loaded_ray['info_loss_pixel_range'])
-            loaded_ray.update({'rays_o_near': rays_o_near, 'rays_d_near': rays_d_near})
         def sample_target_rgb(coord, target, loaded_ray):
             def normalize_pts(pts, H, W):
                 pts[..., 0] = pts[..., 0] / W
@@ -357,15 +216,6 @@ class Infonerf:
             rays_o_ent, rays_d_ent, coord_ent = random_sample_ray(
                 img_h, img_w, focal, rgb_pose_e, n_entropy, center_crop=center_crop)
             loaded_ray.update({'rays_o_ent': rays_o_ent, 'rays_d_ent': rays_d_ent})
-        def sample_unseen_info_gain_rays(img_h, img_w, focal, rgb_pose_e, n_entropy, coord_ent, sampling_method, loaded_ray):
-            if sampling_method == 'near_pose':
-                ent_near_pose = loaded_ray.get_near_c2w(rgb_pose_e)
-                rays_o_ent_near, rays_d_ent_near, _ = random_sample_ray(
-                    img_h, img_w, focal, ent_near_pose, n_entropy, pix_coord=coord_ent)
-            else:
-                rays_o_ent_near, rays_d_ent_near, _ = sample_nearby_ray(
-                    img_h, img_w, focal, rgb_pose_e, coord_ent, loaded_ray['info_loss_pixel_range'])
-            loaded_ray.update({'rays_o_ent_near': rays_o_ent_near, 'rays_d_ent_near': rays_d_ent_near})
         
         sample_info_gain = self.cfg['info_loss']['use']
         sample_entropy = self.cfg['entropy_loss']['use']
@@ -386,22 +236,15 @@ class Infonerf:
         #add data in loaded ray
         loaded_ray.update({'coord': coord, 'rays_o': rays_o, 'rays_d': rays_d})
         if sample_info_gain:
-            sample_info_gain_rays(self.img_h, self.img_w, self.focal, loaded_ray['rgb_pose'], 
-                                self.cfg['training']['N_rand'], loaded_ray['coord'], 
-                                self.cfg['info_loss']['sampling_method'], loaded_ray)
+            print("error,shallnot use info loss")
         sample_target_rgb(coord, target, loaded_ray)
         if sample_entropy:
             n_entropy = self.cfg['entropy_loss']['N_entropy']
             sample_unseen_rays(self.img_h, self.img_w, self.focal, self.loaded_data['poses'], 
                                 n_entropy, _crop, loaded_ray)
-        if sample_info_gain:
-            sample_unseen_info_gain_rays(self.img_h, self.img_w, self.focal, 
-                                        loaded_ray['rgb_pose_e'], n_entropy, 
-                                        loaded_ray['coord_ent'], 
-                                        self.cfg['info_loss']['sampling_method'], loaded_ray)
         return loaded_ray
-    def __render_rays(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
-
+    #hard and important
+    def __get_ray_output(self, rays_o, rays_d, N_samples, N_importance=0, eval=False):
         def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0., white_bkgd=False,
                     out_alpha=False, out_sigma=False, out_dist=False, debug_save=False):
             # """Transforms model's predictions to semantically meaningful values.
@@ -418,16 +261,15 @@ class Infonerf:
             # """    
             def raw2alpha(raw, dists, act_fn=nn.relu):
                 return 1. - jt.exp(-act_fn(raw) * dists)
-            # distance between sample points
-            dists = z_vals[..., 1:] - z_vals[..., :-1] 
-            dists = jt.concat([dists, jt.expand(jt.array([1e10]), dists[..., :1].shape)], -1)  # [N_rays, N_samples]
-            dists = dists * jt.norm(rays_d, dim=-1, keepdims=True)  # [N_rays, N_samples]
 
             rgb = jt.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
             noise = 0.
             if raw_noise_std > 0.:
                 noise = jt.randn(raw[..., 3].shape) * raw_noise_std
-
+            # distance between sample points
+            dists = z_vals[..., 1:] - z_vals[..., :-1] 
+            dists = jt.concat([dists, jt.expand(jt.array([1e10]), dists[..., :1].shape)], -1)  # [N_rays, N_samples]
+            dists = dists * jt.norm(rays_d, dim=-1, keepdims=True)  # [N_rays, N_samples]
             # alpha: 1. - exp(-delta * sigma)
             alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
             sigma = nn.relu(raw[..., 3] + noise)  # for sigma output
@@ -452,35 +294,34 @@ class Infonerf:
                 output.update({'dists': dists})
             return output
         def calculate_sample_points(rays_o, rays_d, N_samples, near, far, eval, perturb):
-            """Calculate sample points along rays."""
-            def generate_pts(rays_o, rays_d, near, far, N_samples, lindisp=False, perturb=False):
-                near, far = near * jt.ones_like(rays_d[..., :1]), far * jt.ones_like(rays_d[..., :1])
-
-                t_vals = jt.linspace(0., 1., steps=N_samples)
-                if not lindisp:
-                    z_vals = near * (1. - t_vals) + far * (t_vals)
-                else:
-                    z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
-
-                # not sample at fixed z, but random position betwween [z, z+1]
-                if perturb:
-                    # get intervals between samples
-                    mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-                    upper = jt.concat([mids, z_vals[..., -1:]], -1)
-                    lower = jt.concat([z_vals[..., :1], mids], -1)
-                    # stratified samples in those intervals
-                    t_rand = jt.rand(z_vals.shape)
-                    z_vals = lower + (upper - lower) * t_rand
+            # pts: A tensor containing the 3D points sampled along each ray in the scene.
+            # rays_o: Ray origins, representing the starting points of rays in the scene.
+            # rays_d: Ray directions, representing the directions in which the rays are cast.
+            # z_vals: Depth values along each ray, indicating the sampled positions along the ray.
+            near = near * jt.ones_like(rays_d[..., :1])
+            far = far * jt.ones_like(rays_d[..., :1])
+            t_vals = jt.linspace(0., 1., steps=N_samples)
+            # z_vals got from near to far
+            if not N_samples:
+                z_vals = near * (1. - t_vals) + far * (t_vals)
+            else:
+                z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
                 
-                pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None] # [N_rays, N_samples, 3]
-                return pts, z_vals
-            pts, z_vals = generate_pts(
-                rays_o, rays_d, near, far, N_samples,
-                perturb=((not eval) and (perturb)))
+            perturb=((not eval) and (perturb))
+            # sample at  random position betwween [z, z+1]
+            if perturb:
+                # get intervals between samples
+                mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+                upper = jt.concat([mids, z_vals[..., -1:]], -1)
+                lower = jt.concat([z_vals[..., :1], mids], -1)
+                # stratified samples in those intervals
+                t_rand = jt.rand(z_vals.shape)
+                z_vals = lower + (upper - lower) * t_rand
             
+            pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None] # [N_rays, N_samples, 3]
             return pts, z_vals
-        def handle_view_directions(rays_d, N_samples, use_viewdirs):
-            """Handle view directions if enabled."""
+        def Normalization_ray_d(rays_d, N_samples, use_viewdirs):
+            """gen view directions if enabled."""
             if use_viewdirs:
                 view_dirs = rays_d / jt.norm(rays_d, dim=-1, keepdims=True)
                 view_dirs = view_dirs.unsqueeze(1)
@@ -490,7 +331,7 @@ class Infonerf:
 
             return view_dirs
         def calculate_fine_sample_points(N_importance, weights, z_vals, eval, perturb):
-            """Calculate sample points for fine rendering."""
+            """in fine network, high weight will have more chanced to be sampled"""
             def sample_pdf(bins, weights, N_samples, det=False):
                 """
                 Sample from a probability density function (pdf) defined by bins and weights.
@@ -543,7 +384,7 @@ class Infonerf:
             _, z_vals_re = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
 
             return z_vals_re
-        result = {}
+        output = {}
 
         # Calculate sample points along rays
         near, far = self.cfg['rendering']['near'], self.cfg['rendering']['far']
@@ -551,20 +392,21 @@ class Infonerf:
                                             eval, self.cfg['rendering']['perturb'])
 
         # Handle view directions if enabled
-        view_dirs = handle_view_directions(rays_d, N_samples, self.cfg['rendering']['use_viewdirs'])
+        view_dirs = Normalization_ray_d(rays_d, N_samples, self.cfg['rendering']['use_viewdirs'])
 
         # Run coarse rendering network
+        # network use 3D point and it's view dir as input
         raw_out = run_network(
             pts, view_dirs, self.model, self.embed_fn, self.embeddirs_fn,
             self.cfg['training']['netchunk'] if not eval else  self.cfg['training']['evalchunk'])
-        # Decode and store results for coarse rendering
+        # together with z_vals to get final ray result
         decoded_out = raw2outputs(
             raw_out, z_vals, rays_d,
             self.cfg['rendering']['raw_noise_std'] if not eval else 0.,
             self.cfg['dataset']['white_bkgd'],
             out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
 
-        result.update({'coarse': decoded_out})
+        output.update({'coarse': decoded_out})
 
         # Run fine rendering network if N_importance > 0
         if N_importance > 0:
@@ -587,9 +429,9 @@ class Infonerf:
                 self.cfg['dataset']['white_bkgd'],
                 out_alpha=(not eval), out_sigma=(not eval), out_dist=(not eval))
 
-            result.update({'fine': decoded_out_re})
+            output.update({'fine': decoded_out_re})
 
-        return result
+        return output
        
     ## above are entrance function
     def train(self):
@@ -601,6 +443,7 @@ class Infonerf:
             return all_rays_o, all_rays_d
         def concatenate_rays(train_data, entries):
             # Concatenate ray origins or directions based on the specified entries
+            # Concatenate: flatten
             rays_list = [train_data[_entry] for _entry in entries if _entry in train_data]
             concatenated_rays = jt.concat(rays_list, dim=0)
             return concatenated_rays
@@ -649,10 +492,6 @@ class Infonerf:
             loss_dict.update({"loss": total_loss.item()})
             jt.sync_all(True)
             return total_loss, loss_dict
-        def adjust_info_lambda(it):
-            # Adjust lambda of Information Gain Reduction Loss
-            if it > 0 and it % self.cfg['info_loss']['reduce_step_size'] == 0 and self.cfg['info_loss']['use']:
-                self.info_lambda *= self.cfg['info_loss']['reduce_step_rate']
         def print_and_save_results(it, loss_dict):
             # Print and save results periodically
             if it % self.cfg['training']['i_print'] == 0 and it > 0:
@@ -689,15 +528,13 @@ class Infonerf:
             train_data = self.__gen_train_data()
             all_rays_o, all_rays_d =collect_rays(train_data)
             # Render rays and calculate losses
-            render_out = self.__render_rays(all_rays_o, all_rays_d, N_sample, N_refine)
+            render_out = self.__get_ray_output(all_rays_o, all_rays_d, N_sample, N_refine)
             total_loss, loss_dict =calculate_losses(render_out, train_data, N_rays, N_entropy, it)
             # Perform optimization step
             self.optimizer.step(total_loss)
             # Update learning rate
             new_lr = self.cfg['training']['lr'] * (0.1 ** (it / self.cfg['training']['lr_decay']))
             self.optimizer.lr = new_lr
-            # Adjust lambda of Information Gain Reduction Loss
-            adjust_info_lambda(it)
             # Print and save results periodically
             print_and_save_results(it, loss_dict)
     def test(self, save_path = None, skip = 8, dsample_ratio=2):
@@ -713,12 +550,13 @@ class Infonerf:
         # metric = self.test(test_pose, ref_images, not no_metric, not no_metric, False, save_path, dsample_ratio)
         if test_pose.ndim == 2:
             test_pose = test_pose.unsqueeze(0)
-        predict = self.__render_image(test_pose, dsample_ratio, save_dir=save_path)
+        print("testing")
+        predict = self.__gen_nerf_imgs(test_pose, dsample_ratio, save_dir=save_path)
         ref = nn.resize(ref_images, size=(self.img_h // (2 ** dsample_ratio), self.img_w // (2 ** dsample_ratio)), mode='bilinear')
         with jt.no_grad():
             metric = {}
             predict = jt.stack(predict, dim=0)  # [B, 3, H, W]
             if ref is not None:
-                psnr_avg = ls.img2psnr_redefine(predict, ref)
+                psnr_avg = ls.get_psnr(predict, ref)
                 metric['psnr'] = psnr_avg.item()
         print("Metric result is ", metric)

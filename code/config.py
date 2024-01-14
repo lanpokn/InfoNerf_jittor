@@ -253,7 +253,6 @@ def load_blender_data_ex(args):
         else:
             np.random.seed(args['fewshot_seed'])
             i_train = np.random.choice(i_train, args['fewshot'], replace=False)
-        print('Few-shot training ', i_train)
         raw_data['i_split'] = [i_train, i_val, i_test]
 
     # Convert numpy arrays to jittor.Var

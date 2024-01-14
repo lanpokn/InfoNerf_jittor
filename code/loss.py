@@ -4,11 +4,8 @@ import jittor as jt
 import jittor.nn as nn
 
 # Misc
-img2mse = lambda x, y : jt.mean((x - y) ** 2)
 mse2psnr = lambda x : -10. * jt.log(x) / jt.log(jt.Var([10.]))
-to8b = lambda x : (255 * np.clip(x, 0, 1)).astype(np.uint8)
-
-def img2psnr_redefine(x, y):
+def get_psnr(x, y):
     '''
     we redefine the PSNR function,
     [previous]
@@ -51,34 +48,19 @@ class EntropyLoss:
         """
         # Compute probability distribution from sigma values
         ray_prob = sigma / (jt.sum(sigma, -1).unsqueeze(-1) + 1e-10)
-
         # Compute entropy for the probability distribution
-        entropy_ray = self.entropy(ray_prob)
-
+        if self.type_ == 'log2':
+            entropy_ray =  -1 * ray_prob * jt.log2(ray_prob + 1e-10)
+        elif self.type_ == '1-p':
+            entropy_ray =  ray_prob * jt.log2(1 - ray_prob)
         # Sum entropy along the last dimension
         entropy_ray_loss = jt.sum(entropy_ray, -1)
-
         # Create a mask based on the accumulation values and detach it to prevent gradient flow
         mask = (acc > self.threshold).stop_grad()
-
         # Apply the mask to the entropy values
         entropy_ray_loss *= mask
-
+        loss_mean = jt.mean(entropy_ray_loss)
         # Apply log scaling if specified, then compute the mean of the entropy loss
         if self.entropy_log_scaling:
-            return jt.log(jt.mean(entropy_ray_loss) + 1e-10)
-        return jt.mean(entropy_ray_loss)
-    def entropy(self, prob):
-        """
-        Compute entropy based on probability values.
-
-        Args:
-            prob (jt.Var): Probability values.
-
-        Returns:
-            jt.Var: Entropy values.
-        """
-        if self.type_ == 'log2':
-            return -1 * prob * jt.log2(prob + 1e-10)
-        elif self.type_ == '1-p':
-            return prob * jt.log2(1 - prob)
+            return jt.log(loss_mean + 1e-10)
+        return loss_mean
