@@ -560,3 +560,11 @@ class Infonerf:
                 psnr_avg = ls.get_psnr(predict, ref)
                 metric['psnr'] = psnr_avg.item()
         print("Metric result is ", metric)
+    def render_an_image(self,test_id):
+        #if you need more option, please change blender config file in dataset
+        test_id = self.loaded_data['i_split'][2][test_id]
+        test_pose = self.loaded_data['poses'][test_id]
+        if test_pose.ndim == 2:
+            test_pose = test_pose.unsqueeze(0)
+        self.__gen_nerf_imgs(test_pose, 0, save_dir="./")
+        print("render complete")
